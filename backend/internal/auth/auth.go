@@ -383,3 +383,78 @@ func generateJTI() string {
 	rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
+
+// BindWalletRequest represents a wallet binding request
+type BindWalletRequest struct {
+	WalletAddress string `json:"wallet_address" binding:"required"`
+}
+
+// BindWalletResponse represents a wallet binding response
+type BindWalletResponse struct {
+	User    UserResponse `json:"user"`
+	Message string       `json:"message"`
+}
+
+// ValidateEthereumAddress validates an Ethereum wallet address format
+// Ethereum addresses are 42 characters: "0x" prefix + 40 hex characters
+func ValidateEthereumAddress(address string) bool {
+	// Check length: must be exactly 42 characters
+	if len(address) != 42 {
+		return false
+	}
+
+	// Check prefix: must start with "0x" or "0X"
+	if address[0] != '0' || (address[1] != 'x' && address[1] != 'X') {
+		return false
+	}
+
+	// Check remaining 40 characters are valid hex
+	for i := 2; i < 42; i++ {
+		c := address[i]
+		isDigit := c >= '0' && c <= '9'
+		isLowerHex := c >= 'a' && c <= 'f'
+		isUpperHex := c >= 'A' && c <= 'F'
+		if !isDigit && !isLowerHex && !isUpperHex {
+			return false
+		}
+	}
+
+	return true
+}
+
+// BindWallet binds a wallet address to a creator's account
+func (s *Service) BindWallet(ctx context.Context, userID uuid.UUID, req *BindWalletRequest) (*BindWalletResponse, error) {
+	// Validate wallet address format
+	if !ValidateEthereumAddress(req.WalletAddress) {
+		return nil, ErrInvalidWalletAddress
+	}
+
+	// Get user to verify they exist and are a creator
+	user, err := s.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only creators can bind wallet addresses
+	if user.UserType != models.UserTypeCreator {
+		return nil, ErrNotCreator
+	}
+
+	// Update wallet address in database
+	_, err = s.db.Exec(ctx, `
+		UPDATE users 
+		SET wallet_address = $1, updated_at = NOW()
+		WHERE id = $2
+	`, req.WalletAddress, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update wallet address: %w", err)
+	}
+
+	// Update user object with new wallet address
+	user.WalletAddress = &req.WalletAddress
+
+	return &BindWalletResponse{
+		User:    toUserResponse(user),
+		Message: "Wallet address bound successfully",
+	}, nil
+}

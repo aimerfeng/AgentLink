@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+### 2024-12-28 - 钱包绑定功能实现
+
+#### 新增功能
+
+**Task 6: 实现钱包绑定功能** ✅
+
+##### 6.1 创建钱包绑定接口
+- 创建 `PUT /api/v1/creators/me/wallet` 接口
+- 实现以太坊地址格式验证：
+  - 长度验证：必须为 42 字符
+  - 前缀验证：必须以 "0x" 或 "0X" 开头
+  - 字符验证：后 40 位必须为有效十六进制字符 (0-9, a-f, A-F)
+- 仅允许创作者绑定钱包地址（开发者无法绑定）
+- 绑定成功后更新数据库并返回更新后的用户信息
+
+##### 6.2 属性测试 - Property 10: Wallet Address Validation
+- 验证有效以太坊地址格式通过验证（100 次测试）
+- 验证错误长度地址被拒绝（100 次测试）
+- 验证错误前缀地址被拒绝（100 次测试）
+- 验证非十六进制字符地址被拒绝（100 次测试）
+- 集成测试：验证完整钱包绑定流程
+- 集成测试：验证开发者无法绑定钱包
+- 集成测试：验证无效地址被拒绝
+
+#### 修改文件
+
+```
+backend/internal/auth/
+├── auth.go              # 添加 ValidateEthereumAddress() 和 BindWallet() 方法
+├── errors.go            # 添加 ErrInvalidWalletAddress 和 ErrNotCreator 错误
+└── auth_property_test.go # 添加 Property 10 测试用例
+
+backend/internal/server/
+└── api.go               # 实现 handleBindWallet handler
+```
+
+#### 新增错误类型
+
+- `ErrInvalidWalletAddress` - 无效的以太坊钱包地址格式
+- `ErrNotCreator` - 仅创作者可以绑定钱包地址
+
+#### 需求覆盖
+
+| 需求 | 描述 | 状态 |
+|------|------|------|
+| R1.2 | 创作者绑定钱包地址并验证格式 | ✅ |
+
+#### API 接口
+
+```
+PUT /api/v1/creators/me/wallet
+
+Request:
+{
+    "wallet_address": "0x1234567890abcdef1234567890abcdef12345678"
+}
+
+Response (200 OK):
+{
+    "user": {
+        "id": "uuid",
+        "email": "creator@example.com",
+        "user_type": "creator",
+        "wallet_address": "0x1234567890abcdef1234567890abcdef12345678",
+        "email_verified": false,
+        "created_at": "2024-12-28T00:00:00Z"
+    },
+    "message": "Wallet address bound successfully"
+}
+
+Error Responses:
+- 400: Invalid Ethereum wallet address format
+- 400: Only creators can bind wallet addresses
+- 401: Unauthorized (missing or invalid token)
+- 404: User not found
+```
+
+#### 下一步计划
+
+- Task 7: 实现认证中间件
+- Task 8: Checkpoint - 认证系统验证
+
+---
+
 ### 2024-12-28 - 认证服务实现
 
 #### 新增功能

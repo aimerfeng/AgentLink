@@ -10,6 +10,7 @@ import (
 	"github.com/aimerfeng/AgentLink/internal/middleware"
 	"github.com/aimerfeng/AgentLink/internal/monitoring"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -283,7 +284,47 @@ func respondError(c *gin.Context, err *apierrors.APIError) {
 // Placeholder handlers - to be implemented in subsequent tasks
 func (s *APIServer) handleGetCreator(c *gin.Context)      { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleUpdateCreator(c *gin.Context)   { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleBindWallet(c *gin.Context)      { c.JSON(501, gin.H{"error": "not implemented"}) }
+
+// handleBindWallet handles wallet address binding for creators
+func (s *APIServer) handleBindWallet(c *gin.Context) {
+	// Get user ID from context (set by auth middleware)
+	userIDStr, exists := c.Get("user_id")
+	if !exists {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr.(string))
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse request body
+	var req auth.BindWalletRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Bind wallet
+	resp, err := s.authService.BindWallet(c.Request.Context(), userID, &req)
+	if err != nil {
+		switch err {
+		case auth.ErrInvalidWalletAddress:
+			respondError(c, apierrors.NewValidationError("Invalid Ethereum wallet address format. Address must be 42 characters starting with 0x followed by 40 hex characters."))
+		case auth.ErrNotCreator:
+			respondError(c, apierrors.NewInvalidRequestError("Only creators can bind wallet addresses"))
+		case auth.ErrUserNotFound:
+			respondError(c, apierrors.ErrUserNotFoundError)
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
 func (s *APIServer) handleCreateAgent(c *gin.Context)     { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleListAgents(c *gin.Context)      { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleGetAgent(c *gin.Context)        { c.JSON(501, gin.H{"error": "not implemented"}) }
