@@ -2,7 +2,9 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 
+	"github.com/aimerfeng/AgentLink/internal/agent"
 	"github.com/aimerfeng/AgentLink/internal/auth"
 	"github.com/aimerfeng/AgentLink/internal/config"
 	apierrors "github.com/aimerfeng/AgentLink/internal/errors"
@@ -20,6 +22,7 @@ type APIServer struct {
 	router           *gin.Engine
 	db               *pgxpool.Pool
 	authService      *auth.Service
+	agentService     *agent.Service
 	jwtAuthenticator *middleware.JWTAuthenticator
 }
 
@@ -41,6 +44,13 @@ func NewAPIServer(cfg *config.Config, db *pgxpool.Pool) *APIServer {
 	// Create auth service
 	authService := auth.NewService(db, &cfg.JWT, &cfg.Quota)
 
+	// Create agent service
+	agentService, err := agent.NewService(db, &cfg.Encryption)
+	if err != nil {
+		// Log error but continue - encryption key might not be set in dev
+		agentService = nil
+	}
+
 	// Create JWT authenticator for middleware
 	jwtAuthenticator := middleware.NewJWTAuthenticator(&cfg.JWT)
 
@@ -49,6 +59,7 @@ func NewAPIServer(cfg *config.Config, db *pgxpool.Pool) *APIServer {
 		router:           router,
 		db:               db,
 		authService:      authService,
+		agentService:     agentService,
 		jwtAuthenticator: jwtAuthenticator,
 	}
 
@@ -306,12 +317,293 @@ func (s *APIServer) handleBindWallet(c *gin.Context) {
 
 	c.JSON(http.StatusOK, resp)
 }
-func (s *APIServer) handleCreateAgent(c *gin.Context)     { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleListAgents(c *gin.Context)      { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleGetAgent(c *gin.Context)        { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleUpdateAgent(c *gin.Context)     { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handlePublishAgent(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleUnpublishAgent(c *gin.Context)  { c.JSON(501, gin.H{"error": "not implemented"}) }
+
+// handleCreateAgent handles agent creation
+func (s *APIServer) handleCreateAgent(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse request body
+	var req agent.CreateAgentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Create agent
+	resp, err := s.agentService.Create(c.Request.Context(), userID, &req)
+	if err != nil {
+		switch err {
+		case agent.ErrInvalidPrice:
+			respondError(c, apierrors.NewValidationError("Price must be between $0.001 and $100 per call"))
+		default:
+			if err.Error() != "" && err.Error()[:len("invalid agent configuration")] == "invalid agent configuration" {
+				respondError(c, apierrors.NewValidationError(err.Error()))
+			} else {
+				respondError(c, apierrors.ErrInternalServerError)
+			}
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, resp)
+}
+
+// handleListAgents handles listing agents for a creator
+func (s *APIServer) handleListAgents(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse pagination params
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	// List agents
+	resp, err := s.agentService.List(c.Request.Context(), userID, page, pageSize)
+	if err != nil {
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleGetAgent handles getting a single agent
+func (s *APIServer) handleGetAgent(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Get agent
+	resp, err := s.agentService.GetByIDForOwner(c.Request.Context(), agentID, userID)
+	if err != nil {
+		switch err {
+		case agent.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		case agent.ErrAgentNotOwned:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrAgentNotOwned,
+				Message:    "You do not own this agent",
+				HTTPStatus: http.StatusForbidden,
+			})
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleUpdateAgent handles updating an agent
+func (s *APIServer) handleUpdateAgent(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Parse request body
+	var req agent.UpdateAgentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Update agent
+	resp, err := s.agentService.Update(c.Request.Context(), agentID, userID, &req)
+	if err != nil {
+		switch err {
+		case agent.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		case agent.ErrAgentNotOwned:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrAgentNotOwned,
+				Message:    "You do not own this agent",
+				HTTPStatus: http.StatusForbidden,
+			})
+		case agent.ErrInvalidPrice:
+			respondError(c, apierrors.NewValidationError("Price must be between $0.001 and $100 per call"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handlePublishAgent handles publishing an agent
+func (s *APIServer) handlePublishAgent(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Publish agent
+	resp, err := s.agentService.Publish(c.Request.Context(), agentID, userID)
+	if err != nil {
+		switch err {
+		case agent.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		case agent.ErrAgentNotOwned:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrAgentNotOwned,
+				Message:    "You do not own this agent",
+				HTTPStatus: http.StatusForbidden,
+			})
+		case agent.ErrAgentAlreadyActive:
+			respondError(c, apierrors.NewInvalidRequestError("Agent is already published"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleUnpublishAgent handles unpublishing an agent
+func (s *APIServer) handleUnpublishAgent(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Unpublish agent
+	resp, err := s.agentService.Unpublish(c.Request.Context(), agentID, userID)
+	if err != nil {
+		switch err {
+		case agent.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		case agent.ErrAgentNotOwned:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrAgentNotOwned,
+				Message:    "You do not own this agent",
+				HTTPStatus: http.StatusForbidden,
+			})
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
 func (s *APIServer) handleUploadKnowledge(c *gin.Context) { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleSearchAgents(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleGetPublicAgent(c *gin.Context)  { c.JSON(501, gin.H{"error": "not implemented"}) }

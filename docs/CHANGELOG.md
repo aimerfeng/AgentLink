@@ -2,6 +2,141 @@
 
 ## [Unreleased]
 
+### 2024-12-28 - Agent 构建服务实现
+
+#### 新增功能
+
+**Task 9: 实现 Agent 构建服务** ✅
+
+##### 9.1 创建 Agent CRUD 接口
+- 实现 `POST /api/v1/agents` - 创建 Agent
+- 实现 `GET /api/v1/agents` - 获取创作者的 Agent 列表（分页）
+- 实现 `GET /api/v1/agents/:id` - 获取单个 Agent 详情
+- 实现 `PUT /api/v1/agents/:id` - 更新 Agent
+- 实现 `POST /api/v1/agents/:id/publish` - 发布 Agent
+- 实现 `POST /api/v1/agents/:id/unpublish` - 下架 Agent
+- Agent 配置验证：
+  - System Prompt 必填
+  - Model 必填
+  - Provider 必填
+  - Temperature: 0.0 - 2.0
+  - MaxTokens: 1 - 128000
+  - TopP: 0.0 - 1.0
+
+##### 9.2 属性测试 - Property 2: ID Uniqueness
+- 验证创建多个 Agent 时 ID 唯一性
+- 验证 Agent ID 为有效 UUID
+- **Validates: Requirements 2.3, 4.2**
+
+##### 9.3 实现 Agent 定价配置
+- 价格范围验证：$0.001 - $100
+- 价格存储在 `price_per_call` 字段
+- 创建和更新时均进行价格验证
+
+##### 9.4 属性测试 - Property 11: Price Validation
+- 验证有效价格范围通过验证（100 次测试）
+- 边界值测试：最小值 $0.001、最大值 $100
+- 验证低于最小值被拒绝（100 次测试）
+- 验证高于最大值被拒绝（100 次测试）
+- 验证零值和负值被拒绝
+- **Validates: Requirements 2.4**
+
+##### 9.5 实现 System Prompt 加密存储
+- 使用 AES-256-GCM 加密算法
+- 加密密钥从环境变量 `ENCRYPTION_KEY` 加载
+- 配置存储在 `config_encrypted` 列
+- IV 存储在 `config_iv` 列
+- 仅 Agent 所有者可以获取解密后的配置
+
+##### 9.6 属性测试 - Property 19: Encryption Round-Trip
+- 验证加密后解密得到原始数据（100 次测试）
+- 验证不同加密产生不同密文（100 次测试）
+- 验证篡改检测：修改密文后解密失败（100 次测试）
+- 集成测试：验证 Agent 配置加密存储和检索
+- **Validates: Requirements 10.1**
+
+#### 新增文件
+
+```
+backend/internal/agent/
+├── agent.go              # Agent 服务核心逻辑
+└── agent_property_test.go # 属性测试
+```
+
+#### 修改文件
+
+- `backend/internal/server/api.go` - 实现 Agent 相关 handler
+- `backend/internal/models/agent.go` - Agent 数据模型
+- `backend/internal/errors/errors.go` - Agent 相关错误码
+
+#### 新增错误类型
+
+| 错误 | 描述 |
+|------|------|
+| `ErrAgentNotFound` | Agent 不存在 |
+| `ErrAgentNotOwned` | Agent 不属于当前用户 |
+| `ErrInvalidPrice` | 价格超出有效范围 |
+| `ErrInvalidConfig` | Agent 配置无效 |
+| `ErrEncryptionFailed` | 加密失败 |
+| `ErrDecryptionFailed` | 解密失败 |
+| `ErrAgentDraft` | Agent 处于草稿状态 |
+| `ErrAgentAlreadyActive` | Agent 已经是活跃状态 |
+
+#### 需求覆盖
+
+| 需求 | 描述 | 状态 |
+|------|------|------|
+| R2.1 | Agent 配置验证和创建 | ✅ |
+| R2.3 | 生成唯一 AgentID | ✅ |
+| R2.4 | 价格范围验证 | ✅ |
+| R10.1 | System Prompt AES-256 加密存储 | ✅ |
+
+#### API 接口
+
+```
+POST   /api/v1/agents           # 创建 Agent
+GET    /api/v1/agents           # 获取 Agent 列表
+GET    /api/v1/agents/:id       # 获取 Agent 详情
+PUT    /api/v1/agents/:id       # 更新 Agent
+POST   /api/v1/agents/:id/publish   # 发布 Agent
+POST   /api/v1/agents/:id/unpublish # 下架 Agent
+```
+
+#### 测试命令
+
+```bash
+# 运行所有 Agent 属性测试
+go test -v ./internal/agent/... -count=1
+
+# 运行 ID 唯一性测试
+go test -v -run TestProperty2_IDUniqueness ./internal/agent/...
+
+# 运行价格验证测试
+go test -v -run TestProperty11 ./internal/agent/...
+
+# 运行加密往返测试
+go test -v -run TestProperty19 ./internal/agent/...
+```
+
+#### 测试结果
+
+| 测试 | 状态 | 说明 |
+|------|------|------|
+| TestProperty2_IDUniqueness | ✅ PASS | 需要数据库 |
+| TestProperty11_PriceValidation | ✅ PASS | 100 次测试通过 |
+| TestProperty11_PriceValidationIntegration | ✅ PASS | 需要数据库 |
+| TestProperty19_EncryptionRoundTrip | ✅ PASS | 100 次测试通过 |
+| TestProperty19_EncryptionDifferentNonces | ✅ PASS | 100 次测试通过 |
+| TestProperty19_EncryptionTamperDetection | ✅ PASS | 100 次测试通过 |
+
+#### 下一步计划
+
+- Task 10: 实现 Agent 发布管理
+- Task 11: 实现 API Key 管理
+- Task 12: 实现 Proxy Gateway 核心
+
+---
+
 ### 2024-12-28 - Checkpoint: 认证系统验证
 
 #### 验证结果
