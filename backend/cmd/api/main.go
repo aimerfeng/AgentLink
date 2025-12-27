@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aimerfeng/AgentLink/internal/config"
+	"github.com/aimerfeng/AgentLink/internal/database"
 	"github.com/aimerfeng/AgentLink/internal/logging"
 	"github.com/aimerfeng/AgentLink/internal/monitoring"
 	"github.com/aimerfeng/AgentLink/internal/server"
@@ -32,6 +33,13 @@ func main() {
 		Str("name", cfg.Server.Name).
 		Msg("Starting AgentLink API server")
 
+	// Initialize database connection
+	db, err := database.New(cfg.Database.URL)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to connect to database")
+	}
+	defer db.Close()
+
 	// Initialize Prometheus metrics
 	monitoring.Init()
 	log.Info().Msg("Prometheus metrics initialized")
@@ -42,7 +50,7 @@ func main() {
 	}
 
 	// Create and start server
-	srv := server.NewAPIServer(cfg)
+	srv := server.NewAPIServer(cfg, db.Pool)
 
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),

@@ -1,0 +1,81 @@
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw localPart: "aaaaa"
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw domain: "aaa"
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw tld: "com"
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw passwordLength: 8
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char0: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char1: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char2: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char3: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char4: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char5: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char6: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw char7: 0
+# 2025/12/28 02:44:45.783955 [TestProperty35_FreeQuotaInitialization] [rapid] draw userType: "developer"
+# 2025/12/28 02:44:45.785696 [TestProperty35_FreeQuotaInitialization] Registration failed: failed to check email existence: failed to connect to `host=localhost user=postgres database=agentlink_test`: dial error (dial tcp 127.0.0.1:5432: connectex: No connection could be made because the target machine actively refused it.)
+# 
+v0.4.8#13601610576928659306
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
