@@ -12,49 +12,49 @@
 
 ## Phase 0: 环境准备与仓库初始化
 
-- [-] 0. 初始�?Git 仓库和环�?
-  - [ ] 0.1 克隆并配�?Git 仓库
+- [x] 0. 初始化 Git 仓库和环境
+  - [x] 0.1 克隆并配置 Git 仓库
     - 克隆 https://github.com/aimerfeng/AgentLink.git
     - 配置 .gitignore 文件
     - 创建 develop 分支
     - _Requirements: 设计文档 Git Workflow_
-  - [ ] 0.2 创建环境配置文件
+  - [x] 0.2 创建环境配置文件
     - 创建 .env.example 模板文件
-    - 配置所有必需的环境变�?
-    - 创建 .env.local (本地开�?
+    - 配置所有必需的环境变量
+    - 创建 .env.local (本地开发)
     - _Requirements: 设计文档 Configuration Management_
-  - [ ] 0.3 安装开发依�?
+  - [x] 0.3 安装开发依赖
     - 安装 Go 1.22+
     - 安装 Node.js 20+
-    - 安装 Docker �?Docker Compose
+    - 安装 Docker 和 Docker Compose
     - 安装 golangci-lint
     - _Requirements: 设计文档 Technical Stack_
-  - [ ] 0.4 配置外部服务账号
-    - 注册 Stripe 测试账号，获�?API Key
+  - [x] 0.4 配置外部服务账号
+    - 注册 Stripe 测试账号，获取 API Key
     - 注册 Coinbase Commerce 账号
     - 获取 OpenAI/Anthropic/Google AI API Key
-    - 配置 AWS S3 或兼容存�?(MinIO 本地开�?
+    - 配置 AWS S3 或兼容存储(MinIO 本地开发)
     - 配置邮件服务 (SendGrid/Resend)
     - _Requirements: R6, R9, R19_
-  - [ ] 0.5 创建 README.md
+  - [x] 0.5 创建 README.md
     - 项目介绍
-    - 快速开始指�?
+    - 快速开始指南
     - 环境配置说明
     - _Requirements: 项目文档_
 
 ## Phase 1: 项目初始化与基础架构
 
-- [ ] 1. 初始化项目结�?
-  - [ ] 1.1 创建 Go 后端项目结构
+- [-] 1. 初始化项目结�?
+  - [x] 1.1 创建 Go 后端项目结构
     - 初始�?Go module，创�?cmd/api、cmd/proxy、internal 目录结构
     - 配置 Makefile 和基础构建脚本
     - _Requirements: 设计文档 Project Structure_
-  - [ ] 1.2 创建 Next.js 前端项目结构
+  - [x] 1.2 创建 Next.js 前端项目结构
     - 使用 create-next-app 初始�?Next.js 14 项目
     - 配置 Tailwind CSS �?Shadcn UI
     - 创建 app router 目录结构
     - _Requirements: R11.2, 设计文档 Frontend Architecture_
-  - [ ] 1.3 配置 Docker 开发环�?
+  - [x] 1.3 配置 Docker 开发环�?
     - 创建 docker-compose.yml 包含 PostgreSQL、Redis、pgvector
     - 创建各服务的 Dockerfile
     - _Requirements: 设计文档 Deployment Architecture_

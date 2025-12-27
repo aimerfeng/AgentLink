@@ -111,13 +111,13 @@ make migrate-up
 
 ```bash
 # Terminal 1: Backend API
-make run-api
+cd backend && make run-api
 
 # Terminal 2: Proxy Gateway
-make run-proxy
+cd backend && make run-proxy
 
 # Terminal 3: Frontend
-cd web && pnpm dev
+cd frontend && npm install && npm run dev
 ```
 
 ### 7. Access the Application
@@ -132,22 +132,34 @@ cd web && pnpm dev
 
 ```
 AgentLink/
-├── cmd/                    # Application entry points
-│   ├── api/               # Main API server
-│   └── proxy/             # Proxy Gateway server
-├── internal/              # Private application code
-│   ├── config/           # Configuration management
-│   ├── handler/          # HTTP handlers
-│   ├── middleware/       # HTTP middleware
-│   ├── model/            # Data models
-│   ├── repository/       # Database operations
-│   ├── service/          # Business logic
-│   └── pkg/              # Shared utilities
-├── web/                   # Next.js frontend
-│   ├── app/              # App Router pages
-│   ├── components/       # React components
-│   └── lib/              # Utilities and hooks
-├── migrations/            # Database migrations
+├── backend/               # Go backend
+│   ├── cmd/              # Application entry points
+│   │   ├── api/          # Main API server
+│   │   └── proxy/        # Proxy Gateway server
+│   ├── internal/         # Private application code
+│   │   ├── cache/        # Redis cache utilities
+│   │   ├── config/       # Configuration management
+│   │   ├── database/     # Database connection
+│   │   ├── errors/       # Error handling
+│   │   ├── middleware/   # HTTP middleware
+│   │   ├── models/       # Data models
+│   │   └── server/       # HTTP server setup
+│   ├── migrations/       # Database migrations
+│   ├── Makefile          # Build and development commands
+│   └── go.mod            # Go module definition
+├── frontend/             # Next.js frontend
+│   ├── src/
+│   │   ├── app/          # App Router pages
+│   │   │   ├── (auth)/   # Auth pages (login, register)
+│   │   │   ├── (dashboard)/ # Dashboard pages
+│   │   │   └── marketplace/ # Marketplace pages
+│   │   ├── components/   # React components
+│   │   │   ├── common/   # Shared components
+│   │   │   └── ui/       # Shadcn UI components
+│   │   ├── lib/          # Utilities and API client
+│   │   └── store/        # Zustand state management
+│   ├── package.json      # Node dependencies
+│   └── tailwind.config.ts # Tailwind configuration
 ├── scripts/              # Development scripts
 ├── docs/                 # Documentation
 └── docker-compose.yml    # Local development services
@@ -180,29 +192,31 @@ See [.env.example](.env.example) for all available configuration options.
 ### Running Tests
 
 ```bash
-# Run all tests
-make test
+# Run all backend tests
+cd backend && make test
 
 # Run with coverage
-make test-coverage
+cd backend && make test-coverage
 
 # Run linter
-make lint
+cd backend && make lint
 ```
 
 ### Building for Production
 
 ```bash
 # Build backend binaries
-make build
+cd backend && make build
 
 # Build frontend
-cd web && pnpm build
+cd frontend && npm run build
 ```
 
 ### Database Migrations
 
 ```bash
+cd backend
+
 # Create new migration
 make migrate-create name=add_users_table
 
