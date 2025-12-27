@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -110,6 +111,8 @@ func (s *APIServer) setupRoutes() {
 			agents.PUT("/:id", s.handleUpdateAgent)
 			agents.POST("/:id/publish", s.handlePublishAgent)
 			agents.POST("/:id/unpublish", s.handleUnpublishAgent)
+			agents.GET("/:id/versions", s.handleListAgentVersions)
+			agents.GET("/:id/versions/:version", s.handleGetAgentVersion)
 			agents.POST("/:id/knowledge", s.handleUploadKnowledge)
 		}
 
@@ -598,6 +601,117 @@ func (s *APIServer) handleUnpublishAgent(c *gin.Context) {
 			})
 		default:
 			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleListAgentVersions handles listing all versions of an agent
+func (s *APIServer) handleListAgentVersions(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Get versions
+	resp, err := s.agentService.GetVersions(c.Request.Context(), agentID, userID)
+	if err != nil {
+		switch err {
+		case agent.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		case agent.ErrAgentNotOwned:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrAgentNotOwned,
+				Message:    "You do not own this agent",
+				HTTPStatus: http.StatusForbidden,
+			})
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleGetAgentVersion handles getting a specific version of an agent
+func (s *APIServer) handleGetAgentVersion(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Parse version number
+	versionStr := c.Param("version")
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid version number"))
+		return
+	}
+
+	// Get version
+	resp, err := s.agentService.GetVersion(c.Request.Context(), agentID, userID, version)
+	if err != nil {
+		switch err {
+		case agent.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		case agent.ErrAgentNotOwned:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrAgentNotOwned,
+				Message:    "You do not own this agent",
+				HTTPStatus: http.StatusForbidden,
+			})
+		default:
+			// Check if it's a version not found error
+			if err.Error() == fmt.Sprintf("version %d not found", version) {
+				respondError(c, apierrors.NewInvalidRequestError(err.Error()))
+			} else {
+				respondError(c, apierrors.ErrInternalServerError)
+			}
 		}
 		return
 	}

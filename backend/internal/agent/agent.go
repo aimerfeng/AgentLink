@@ -612,3 +612,117 @@ func (s *Service) toAgentResponse(agent *models.Agent, cfg *models.AgentConfig) 
 		PublishedAt:   agent.PublishedAt,
 	}
 }
+
+
+// AgentVersionResponse represents a historical version of an agent
+type AgentVersionResponse struct {
+	ID        uuid.UUID           `json:"id"`
+	AgentID   uuid.UUID           `json:"agent_id"`
+	Version   int                 `json:"version"`
+	Config    *models.AgentConfig `json:"config,omitempty"`
+	CreatedAt time.Time           `json:"created_at"`
+}
+
+// ListVersionsResponse represents a list of agent versions
+type ListVersionsResponse struct {
+	Versions []AgentVersionResponse `json:"versions"`
+	Total    int                    `json:"total"`
+}
+
+// GetVersions retrieves all historical versions of an agent
+func (s *Service) GetVersions(ctx context.Context, agentID, creatorID uuid.UUID) (*ListVersionsResponse, error) {
+	// Verify agent exists and ownership
+	agent, err := s.GetByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	if agent.CreatorID != creatorID {
+		return nil, ErrAgentNotOwned
+	}
+
+	// Get all versions
+	rows, err := s.db.Query(ctx, `
+		SELECT id, agent_id, version, config_encrypted, config_iv, created_at
+		FROM agent_versions
+		WHERE agent_id = $1
+		ORDER BY version DESC
+	`, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list versions: %w", err)
+	}
+	defer rows.Close()
+
+	var versions []AgentVersionResponse
+	for rows.Next() {
+		var v models.AgentVersion
+		err := rows.Scan(&v.ID, &v.AgentID, &v.Version, &v.ConfigEncrypted, &v.ConfigIV, &v.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan version: %w", err)
+		}
+
+		// Decrypt config
+		cfg, err := s.decryptConfig(v.ConfigEncrypted, v.ConfigIV)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt version config: %w", err)
+		}
+
+		versions = append(versions, AgentVersionResponse{
+			ID:        v.ID,
+			AgentID:   v.AgentID,
+			Version:   v.Version,
+			Config:    cfg,
+			CreatedAt: v.CreatedAt,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate versions: %w", err)
+	}
+
+	return &ListVersionsResponse{
+		Versions: versions,
+		Total:    len(versions),
+	}, nil
+}
+
+// GetVersion retrieves a specific historical version of an agent
+func (s *Service) GetVersion(ctx context.Context, agentID, creatorID uuid.UUID, version int) (*AgentVersionResponse, error) {
+	// Verify agent exists and ownership
+	agent, err := s.GetByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	if agent.CreatorID != creatorID {
+		return nil, ErrAgentNotOwned
+	}
+
+	// Get specific version
+	var v models.AgentVersion
+	err = s.db.QueryRow(ctx, `
+		SELECT id, agent_id, version, config_encrypted, config_iv, created_at
+		FROM agent_versions
+		WHERE agent_id = $1 AND version = $2
+	`, agentID, version).Scan(&v.ID, &v.AgentID, &v.Version, &v.ConfigEncrypted, &v.ConfigIV, &v.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("version %d not found", version)
+		}
+		return nil, fmt.Errorf("failed to get version: %w", err)
+	}
+
+	// Decrypt config
+	cfg, err := s.decryptConfig(v.ConfigEncrypted, v.ConfigIV)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt version config: %w", err)
+	}
+
+	return &AgentVersionResponse{
+		ID:        v.ID,
+		AgentID:   v.AgentID,
+		Version:   v.Version,
+		Config:    cfg,
+		CreatedAt: v.CreatedAt,
+	}, nil
+}

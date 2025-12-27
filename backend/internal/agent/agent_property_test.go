@@ -690,3 +690,605 @@ func TestProperty19_EncryptionTamperDetection(t *testing.T) {
 		}
 	})
 }
+
+
+// Property 8: Publish State Transition
+// *For any* Agent, publishing SHALL change status to active, and the Agent SHALL become accessible via API.
+// **Validates: Requirements 3.1**
+func TestProperty8_PublishStateTransition(t *testing.T) {
+	if testDB == nil {
+		t.Skip("Test database not available")
+	}
+
+	// Create services
+	jwtConfig := &config.JWTConfig{
+		Secret:             "test-secret-key-for-property-testing-32chars",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		Issuer:             "agentlink-test",
+	}
+
+	quotaConfig := &config.QuotaConfig{
+		FreeInitial:        100,
+		TrialCallsPerAgent: 3,
+	}
+
+	encConfig := &config.EncryptionConfig{
+		Key: "test-encryption-key-32-bytes-ok!",
+	}
+
+	authService := auth.NewService(testDB, jwtConfig, quotaConfig)
+	agentService, err := agent.NewService(testDB, encConfig)
+	if err != nil {
+		t.Fatalf("Failed to create agent service: %v", err)
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		ctx := context.Background()
+
+		// Create a test creator
+		creatorID, cleanup := createTestCreator(ctx, t, authService)
+		defer cleanup()
+
+		// Create an agent (starts in draft status)
+		req := &agent.CreateAgentRequest{
+			Name:         generateAgentName(t),
+			Config:       generateValidAgentConfig(t),
+			PricePerCall: generateValidPrice(t),
+		}
+
+		createResp, err := agentService.Create(ctx, creatorID, req)
+		if err != nil {
+			t.Fatalf("Failed to create agent: %v", err)
+		}
+		defer func() {
+			_, _ = testDB.Exec(ctx, "DELETE FROM agents WHERE id = $1", createResp.ID)
+		}()
+
+		// Property: New agent should be in draft status
+		if createResp.Status != agentmodels.AgentStatusDraft {
+			t.Fatalf("New agent should be in draft status, got: %s", createResp.Status)
+		}
+
+		// Property: PublishedAt should be nil for draft agent
+		if createResp.PublishedAt != nil {
+			t.Fatal("Draft agent should not have PublishedAt set")
+		}
+
+		// Publish the agent
+		publishResp, err := agentService.Publish(ctx, createResp.ID, creatorID)
+		if err != nil {
+			t.Fatalf("Failed to publish agent: %v", err)
+		}
+
+		// Property: After publishing, status should be active
+		if publishResp.Status != agentmodels.AgentStatusActive {
+			t.Fatalf("Published agent should have active status, got: %s", publishResp.Status)
+		}
+
+		// Property: PublishedAt should be set after publishing
+		if publishResp.PublishedAt == nil {
+			t.Fatal("Published agent should have PublishedAt set")
+		}
+
+		// Property: PublishedAt should be recent (within last minute)
+		if time.Since(*publishResp.PublishedAt) > time.Minute {
+			t.Fatal("PublishedAt should be recent")
+		}
+
+		// Property: Publishing an already active agent should return error
+		_, err = agentService.Publish(ctx, createResp.ID, creatorID)
+		if err != agent.ErrAgentAlreadyActive {
+			t.Fatalf("Publishing already active agent should return ErrAgentAlreadyActive, got: %v", err)
+		}
+
+		// Verify agent is retrievable and has correct status
+		retrievedAgent, err := agentService.GetByIDForOwner(ctx, createResp.ID, creatorID)
+		if err != nil {
+			t.Fatalf("Failed to retrieve published agent: %v", err)
+		}
+
+		// Property: Retrieved agent should have active status
+		if retrievedAgent.Status != agentmodels.AgentStatusActive {
+			t.Fatalf("Retrieved agent should have active status, got: %s", retrievedAgent.Status)
+		}
+	})
+}
+
+// TestProperty8_UnpublishStateTransition tests unpublishing an agent
+func TestProperty8_UnpublishStateTransition(t *testing.T) {
+	if testDB == nil {
+		t.Skip("Test database not available")
+	}
+
+	// Create services
+	jwtConfig := &config.JWTConfig{
+		Secret:             "test-secret-key-for-property-testing-32chars",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		Issuer:             "agentlink-test",
+	}
+
+	quotaConfig := &config.QuotaConfig{
+		FreeInitial:        100,
+		TrialCallsPerAgent: 3,
+	}
+
+	encConfig := &config.EncryptionConfig{
+		Key: "test-encryption-key-32-bytes-ok!",
+	}
+
+	authService := auth.NewService(testDB, jwtConfig, quotaConfig)
+	agentService, err := agent.NewService(testDB, encConfig)
+	if err != nil {
+		t.Fatalf("Failed to create agent service: %v", err)
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		ctx := context.Background()
+
+		// Create a test creator
+		creatorID, cleanup := createTestCreator(ctx, t, authService)
+		defer cleanup()
+
+		// Create and publish an agent
+		req := &agent.CreateAgentRequest{
+			Name:         generateAgentName(t),
+			Config:       generateValidAgentConfig(t),
+			PricePerCall: generateValidPrice(t),
+		}
+
+		createResp, err := agentService.Create(ctx, creatorID, req)
+		if err != nil {
+			t.Fatalf("Failed to create agent: %v", err)
+		}
+		defer func() {
+			_, _ = testDB.Exec(ctx, "DELETE FROM agents WHERE id = $1", createResp.ID)
+		}()
+
+		// Publish the agent first
+		_, err = agentService.Publish(ctx, createResp.ID, creatorID)
+		if err != nil {
+			t.Fatalf("Failed to publish agent: %v", err)
+		}
+
+		// Unpublish the agent
+		unpublishResp, err := agentService.Unpublish(ctx, createResp.ID, creatorID)
+		if err != nil {
+			t.Fatalf("Failed to unpublish agent: %v", err)
+		}
+
+		// Property: After unpublishing, status should be inactive
+		if unpublishResp.Status != agentmodels.AgentStatusInactive {
+			t.Fatalf("Unpublished agent should have inactive status, got: %s", unpublishResp.Status)
+		}
+
+		// Verify agent is retrievable and has correct status
+		retrievedAgent, err := agentService.GetByIDForOwner(ctx, createResp.ID, creatorID)
+		if err != nil {
+			t.Fatalf("Failed to retrieve unpublished agent: %v", err)
+		}
+
+		// Property: Retrieved agent should have inactive status
+		if retrievedAgent.Status != agentmodels.AgentStatusInactive {
+			t.Fatalf("Retrieved agent should have inactive status, got: %s", retrievedAgent.Status)
+		}
+	})
+}
+
+// TestProperty8_PublishOwnershipValidation tests that only owners can publish/unpublish
+func TestProperty8_PublishOwnershipValidation(t *testing.T) {
+	if testDB == nil {
+		t.Skip("Test database not available")
+	}
+
+	// Create services
+	jwtConfig := &config.JWTConfig{
+		Secret:             "test-secret-key-for-property-testing-32chars",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		Issuer:             "agentlink-test",
+	}
+
+	quotaConfig := &config.QuotaConfig{
+		FreeInitial:        100,
+		TrialCallsPerAgent: 3,
+	}
+
+	encConfig := &config.EncryptionConfig{
+		Key: "test-encryption-key-32-bytes-ok!",
+	}
+
+	authService := auth.NewService(testDB, jwtConfig, quotaConfig)
+	agentService, err := agent.NewService(testDB, encConfig)
+	if err != nil {
+		t.Fatalf("Failed to create agent service: %v", err)
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		ctx := context.Background()
+
+		// Create two test creators
+		creatorID1, cleanup1 := createTestCreator(ctx, t, authService)
+		defer cleanup1()
+
+		creatorID2, cleanup2 := createTestCreator(ctx, t, authService)
+		defer cleanup2()
+
+		// Create an agent owned by creator 1
+		req := &agent.CreateAgentRequest{
+			Name:         generateAgentName(t),
+			Config:       generateValidAgentConfig(t),
+			PricePerCall: generateValidPrice(t),
+		}
+
+		createResp, err := agentService.Create(ctx, creatorID1, req)
+		if err != nil {
+			t.Fatalf("Failed to create agent: %v", err)
+		}
+		defer func() {
+			_, _ = testDB.Exec(ctx, "DELETE FROM agents WHERE id = $1", createResp.ID)
+		}()
+
+		// Property: Non-owner should not be able to publish
+		_, err = agentService.Publish(ctx, createResp.ID, creatorID2)
+		if err != agent.ErrAgentNotOwned {
+			t.Fatalf("Non-owner publishing should return ErrAgentNotOwned, got: %v", err)
+		}
+
+		// Owner publishes the agent
+		_, err = agentService.Publish(ctx, createResp.ID, creatorID1)
+		if err != nil {
+			t.Fatalf("Owner should be able to publish: %v", err)
+		}
+
+		// Property: Non-owner should not be able to unpublish
+		_, err = agentService.Unpublish(ctx, createResp.ID, creatorID2)
+		if err != agent.ErrAgentNotOwned {
+			t.Fatalf("Non-owner unpublishing should return ErrAgentNotOwned, got: %v", err)
+		}
+
+		// Owner unpublishes the agent
+		_, err = agentService.Unpublish(ctx, createResp.ID, creatorID1)
+		if err != nil {
+			t.Fatalf("Owner should be able to unpublish: %v", err)
+		}
+	})
+}
+
+
+// Property 9: Version Preservation
+// *For any* Agent update, the previous version SHALL be preserved and retrievable, and the version number SHALL increment.
+// **Validates: Requirements 3.2**
+func TestProperty9_VersionPreservation(t *testing.T) {
+	if testDB == nil {
+		t.Skip("Test database not available")
+	}
+
+	// Create services
+	jwtConfig := &config.JWTConfig{
+		Secret:             "test-secret-key-for-property-testing-32chars",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		Issuer:             "agentlink-test",
+	}
+
+	quotaConfig := &config.QuotaConfig{
+		FreeInitial:        100,
+		TrialCallsPerAgent: 3,
+	}
+
+	encConfig := &config.EncryptionConfig{
+		Key: "test-encryption-key-32-bytes-ok!",
+	}
+
+	authService := auth.NewService(testDB, jwtConfig, quotaConfig)
+	agentService, err := agent.NewService(testDB, encConfig)
+	if err != nil {
+		t.Fatalf("Failed to create agent service: %v", err)
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		ctx := context.Background()
+
+		// Create a test creator
+		creatorID, cleanup := createTestCreator(ctx, t, authService)
+		defer cleanup()
+
+		// Create an agent
+		originalConfig := generateValidAgentConfig(t)
+		originalName := generateAgentName(t)
+
+		req := &agent.CreateAgentRequest{
+			Name:         originalName,
+			Config:       originalConfig,
+			PricePerCall: generateValidPrice(t),
+		}
+
+		createResp, err := agentService.Create(ctx, creatorID, req)
+		if err != nil {
+			t.Fatalf("Failed to create agent: %v", err)
+		}
+		defer func() {
+			// Cleanup agent and versions
+			_, _ = testDB.Exec(ctx, "DELETE FROM agent_versions WHERE agent_id = $1", createResp.ID)
+			_, _ = testDB.Exec(ctx, "DELETE FROM agents WHERE id = $1", createResp.ID)
+		}()
+
+		// Property: Initial version should be 1
+		if createResp.Version != 1 {
+			t.Fatalf("Initial version should be 1, got: %d", createResp.Version)
+		}
+
+		// Generate new config for update
+		newConfig := generateValidAgentConfig(t)
+		newName := generateAgentName(t) + "_updated"
+
+		// Update the agent
+		updateReq := &agent.UpdateAgentRequest{
+			Name:   &newName,
+			Config: &newConfig,
+		}
+
+		updateResp, err := agentService.Update(ctx, createResp.ID, creatorID, updateReq)
+		if err != nil {
+			t.Fatalf("Failed to update agent: %v", err)
+		}
+
+		// Property: Version should increment after update
+		if updateResp.Version != 2 {
+			t.Fatalf("Version should be 2 after first update, got: %d", updateResp.Version)
+		}
+
+		// Property: Updated agent should have new values
+		if updateResp.Name != newName {
+			t.Fatalf("Updated name mismatch: expected %q, got %q", newName, updateResp.Name)
+		}
+		if updateResp.Config.SystemPrompt != newConfig.SystemPrompt {
+			t.Fatalf("Updated config mismatch")
+		}
+
+		// Get historical versions
+		versionsResp, err := agentService.GetVersions(ctx, createResp.ID, creatorID)
+		if err != nil {
+			t.Fatalf("Failed to get versions: %v", err)
+		}
+
+		// Property: There should be exactly 1 historical version (version 1)
+		if versionsResp.Total != 1 {
+			t.Fatalf("Should have 1 historical version, got: %d", versionsResp.Total)
+		}
+
+		// Property: Historical version should have version number 1
+		if versionsResp.Versions[0].Version != 1 {
+			t.Fatalf("Historical version should be 1, got: %d", versionsResp.Versions[0].Version)
+		}
+
+		// Property: Historical version should preserve original config
+		if versionsResp.Versions[0].Config.SystemPrompt != originalConfig.SystemPrompt {
+			t.Fatalf("Historical version config mismatch: expected %q, got %q",
+				originalConfig.SystemPrompt, versionsResp.Versions[0].Config.SystemPrompt)
+		}
+
+		// Get specific version
+		versionResp, err := agentService.GetVersion(ctx, createResp.ID, creatorID, 1)
+		if err != nil {
+			t.Fatalf("Failed to get specific version: %v", err)
+		}
+
+		// Property: Retrieved version should match
+		if versionResp.Version != 1 {
+			t.Fatalf("Retrieved version should be 1, got: %d", versionResp.Version)
+		}
+		if versionResp.Config.SystemPrompt != originalConfig.SystemPrompt {
+			t.Fatalf("Retrieved version config mismatch")
+		}
+	})
+}
+
+// TestProperty9_MultipleVersions tests that multiple updates preserve all versions
+func TestProperty9_MultipleVersions(t *testing.T) {
+	if testDB == nil {
+		t.Skip("Test database not available")
+	}
+
+	// Create services
+	jwtConfig := &config.JWTConfig{
+		Secret:             "test-secret-key-for-property-testing-32chars",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		Issuer:             "agentlink-test",
+	}
+
+	quotaConfig := &config.QuotaConfig{
+		FreeInitial:        100,
+		TrialCallsPerAgent: 3,
+	}
+
+	encConfig := &config.EncryptionConfig{
+		Key: "test-encryption-key-32-bytes-ok!",
+	}
+
+	authService := auth.NewService(testDB, jwtConfig, quotaConfig)
+	agentService, err := agent.NewService(testDB, encConfig)
+	if err != nil {
+		t.Fatalf("Failed to create agent service: %v", err)
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		ctx := context.Background()
+
+		// Create a test creator
+		creatorID, cleanup := createTestCreator(ctx, t, authService)
+		defer cleanup()
+
+		// Create an agent
+		configs := []agentmodels.AgentConfig{generateValidAgentConfig(t)}
+
+		req := &agent.CreateAgentRequest{
+			Name:         generateAgentName(t),
+			Config:       configs[0],
+			PricePerCall: generateValidPrice(t),
+		}
+
+		createResp, err := agentService.Create(ctx, creatorID, req)
+		if err != nil {
+			t.Fatalf("Failed to create agent: %v", err)
+		}
+		defer func() {
+			// Cleanup agent and versions
+			_, _ = testDB.Exec(ctx, "DELETE FROM agent_versions WHERE agent_id = $1", createResp.ID)
+			_, _ = testDB.Exec(ctx, "DELETE FROM agents WHERE id = $1", createResp.ID)
+		}()
+
+		// Perform multiple updates (2-5 updates)
+		numUpdates := rapid.IntRange(2, 5).Draw(t, "numUpdates")
+
+		for i := 0; i < numUpdates; i++ {
+			newConfig := generateValidAgentConfig(t)
+			configs = append(configs, newConfig)
+
+			updateReq := &agent.UpdateAgentRequest{
+				Config: &newConfig,
+			}
+
+			updateResp, err := agentService.Update(ctx, createResp.ID, creatorID, updateReq)
+			if err != nil {
+				t.Fatalf("Failed to update agent (update %d): %v", i+1, err)
+			}
+
+			// Property: Version should increment correctly
+			expectedVersion := i + 2 // starts at 1, first update makes it 2
+			if updateResp.Version != expectedVersion {
+				t.Fatalf("Version should be %d after update %d, got: %d", expectedVersion, i+1, updateResp.Version)
+			}
+		}
+
+		// Get all historical versions
+		versionsResp, err := agentService.GetVersions(ctx, createResp.ID, creatorID)
+		if err != nil {
+			t.Fatalf("Failed to get versions: %v", err)
+		}
+
+		// Property: Number of historical versions should equal number of updates
+		if versionsResp.Total != numUpdates {
+			t.Fatalf("Should have %d historical versions, got: %d", numUpdates, versionsResp.Total)
+		}
+
+		// Property: Each historical version should be retrievable and have correct config
+		for i := 0; i < numUpdates; i++ {
+			versionNum := i + 1 // versions 1 through numUpdates
+			versionResp, err := agentService.GetVersion(ctx, createResp.ID, creatorID, versionNum)
+			if err != nil {
+				t.Fatalf("Failed to get version %d: %v", versionNum, err)
+			}
+
+			// Property: Version number should match
+			if versionResp.Version != versionNum {
+				t.Fatalf("Retrieved version should be %d, got: %d", versionNum, versionResp.Version)
+			}
+
+			// Property: Config should match the original config at that version
+			if versionResp.Config.SystemPrompt != configs[i].SystemPrompt {
+				t.Fatalf("Version %d config mismatch: expected %q, got %q",
+					versionNum, configs[i].SystemPrompt, versionResp.Config.SystemPrompt)
+			}
+		}
+	})
+}
+
+// TestProperty9_VersionOwnershipValidation tests that only owners can access versions
+func TestProperty9_VersionOwnershipValidation(t *testing.T) {
+	if testDB == nil {
+		t.Skip("Test database not available")
+	}
+
+	// Create services
+	jwtConfig := &config.JWTConfig{
+		Secret:             "test-secret-key-for-property-testing-32chars",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		Issuer:             "agentlink-test",
+	}
+
+	quotaConfig := &config.QuotaConfig{
+		FreeInitial:        100,
+		TrialCallsPerAgent: 3,
+	}
+
+	encConfig := &config.EncryptionConfig{
+		Key: "test-encryption-key-32-bytes-ok!",
+	}
+
+	authService := auth.NewService(testDB, jwtConfig, quotaConfig)
+	agentService, err := agent.NewService(testDB, encConfig)
+	if err != nil {
+		t.Fatalf("Failed to create agent service: %v", err)
+	}
+
+	rapid.Check(t, func(t *rapid.T) {
+		ctx := context.Background()
+
+		// Create two test creators
+		creatorID1, cleanup1 := createTestCreator(ctx, t, authService)
+		defer cleanup1()
+
+		creatorID2, cleanup2 := createTestCreator(ctx, t, authService)
+		defer cleanup2()
+
+		// Create an agent owned by creator 1
+		req := &agent.CreateAgentRequest{
+			Name:         generateAgentName(t),
+			Config:       generateValidAgentConfig(t),
+			PricePerCall: generateValidPrice(t),
+		}
+
+		createResp, err := agentService.Create(ctx, creatorID1, req)
+		if err != nil {
+			t.Fatalf("Failed to create agent: %v", err)
+		}
+		defer func() {
+			_, _ = testDB.Exec(ctx, "DELETE FROM agent_versions WHERE agent_id = $1", createResp.ID)
+			_, _ = testDB.Exec(ctx, "DELETE FROM agents WHERE id = $1", createResp.ID)
+		}()
+
+		// Update the agent to create a version
+		newConfig := generateValidAgentConfig(t)
+		updateReq := &agent.UpdateAgentRequest{
+			Config: &newConfig,
+		}
+		_, err = agentService.Update(ctx, createResp.ID, creatorID1, updateReq)
+		if err != nil {
+			t.Fatalf("Failed to update agent: %v", err)
+		}
+
+		// Property: Non-owner should not be able to list versions
+		_, err = agentService.GetVersions(ctx, createResp.ID, creatorID2)
+		if err != agent.ErrAgentNotOwned {
+			t.Fatalf("Non-owner listing versions should return ErrAgentNotOwned, got: %v", err)
+		}
+
+		// Property: Non-owner should not be able to get specific version
+		_, err = agentService.GetVersion(ctx, createResp.ID, creatorID2, 1)
+		if err != agent.ErrAgentNotOwned {
+			t.Fatalf("Non-owner getting version should return ErrAgentNotOwned, got: %v", err)
+		}
+
+		// Property: Owner should be able to access versions
+		versionsResp, err := agentService.GetVersions(ctx, createResp.ID, creatorID1)
+		if err != nil {
+			t.Fatalf("Owner should be able to list versions: %v", err)
+		}
+		if versionsResp.Total != 1 {
+			t.Fatalf("Should have 1 version, got: %d", versionsResp.Total)
+		}
+
+		versionResp, err := agentService.GetVersion(ctx, createResp.ID, creatorID1, 1)
+		if err != nil {
+			t.Fatalf("Owner should be able to get version: %v", err)
+		}
+		if versionResp.Version != 1 {
+			t.Fatalf("Version should be 1, got: %d", versionResp.Version)
+		}
+	})
+}

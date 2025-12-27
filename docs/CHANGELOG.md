@@ -2,6 +2,130 @@
 
 ## [Unreleased]
 
+### 2024-12-28 - Agent 发布管理实现
+
+#### 新增功能
+
+**Task 10: 实现 Agent 发布管理** ✅
+
+##### 10.1 创建发布/下架接口
+- 实现 `POST /api/v1/agents/:id/publish` - 发布 Agent
+  - 将 Agent 状态从 draft 改为 active
+  - 设置 published_at 时间戳
+  - 验证所有权（仅创作者可发布自己的 Agent）
+  - 已发布的 Agent 再次发布返回错误
+- 实现 `POST /api/v1/agents/:id/unpublish` - 下架 Agent
+  - 将 Agent 状态改为 inactive
+  - 验证所有权
+- **Validates: Requirements R3.1, R3.3**
+
+##### 10.2 属性测试 - Property 8: Publish State Transition
+- 验证新 Agent 初始状态为 draft
+- 验证发布后状态变为 active
+- 验证 PublishedAt 时间戳正确设置
+- 验证已发布 Agent 再次发布返回 ErrAgentAlreadyActive
+- 验证下架后状态变为 inactive
+- 验证非所有者无法发布/下架 Agent
+- **Validates: Requirements 3.1**
+
+##### 10.3 实现 Agent 版本管理
+- 实现版本历史保存：
+  - 每次更新 Agent 时，将当前版本保存到 `agent_versions` 表
+  - 版本号自动递增
+- 新增 `GetVersions()` 方法 - 获取所有历史版本
+- 新增 `GetVersion()` 方法 - 获取特定版本
+- 新增 API 接口：
+  - `GET /api/v1/agents/:id/versions` - 获取版本列表
+  - `GET /api/v1/agents/:id/versions/:version` - 获取特定版本
+- **Validates: Requirements R3.2**
+
+##### 10.4 属性测试 - Property 9: Version Preservation
+- 验证初始版本为 1
+- 验证每次更新后版本号递增
+- 验证历史版本被正确保存
+- 验证历史版本配置与原始配置匹配
+- 验证多次更新保留所有版本
+- 验证非所有者无法访问版本历史
+- **Validates: Requirements 3.2**
+
+#### 修改文件
+
+```
+backend/internal/agent/
+├── agent.go              # 添加版本管理方法
+└── agent_property_test.go # 添加 Property 8, 9 测试
+
+backend/internal/server/
+└── api.go               # 添加版本管理 handler
+```
+
+#### 新增类型
+
+```go
+// AgentVersionResponse - 历史版本响应
+type AgentVersionResponse struct {
+    ID        uuid.UUID           `json:"id"`
+    AgentID   uuid.UUID           `json:"agent_id"`
+    Version   int                 `json:"version"`
+    Config    *models.AgentConfig `json:"config,omitempty"`
+    CreatedAt time.Time           `json:"created_at"`
+}
+
+// ListVersionsResponse - 版本列表响应
+type ListVersionsResponse struct {
+    Versions []AgentVersionResponse `json:"versions"`
+    Total    int                    `json:"total"`
+}
+```
+
+#### API 接口
+
+```
+POST   /api/v1/agents/:id/publish              # 发布 Agent
+POST   /api/v1/agents/:id/unpublish            # 下架 Agent
+GET    /api/v1/agents/:id/versions             # 获取版本列表
+GET    /api/v1/agents/:id/versions/:version    # 获取特定版本
+```
+
+#### 需求覆盖
+
+| 需求 | 描述 | 状态 |
+|------|------|------|
+| R3.1 | 发布 Agent 使其可用于 API 调用 | ✅ |
+| R3.2 | 更新时保留历史版本 | ✅ |
+| R3.3 | 下架 Agent 拒绝新的 API 调用 | ✅ |
+
+#### 测试命令
+
+```bash
+# 运行所有 Agent 属性测试
+go test -v ./internal/agent/... -count=1
+
+# 运行发布状态转换测试
+go test -v -run TestProperty8 ./internal/agent/...
+
+# 运行版本保留测试
+go test -v -run TestProperty9 ./internal/agent/...
+```
+
+#### 测试结果
+
+| 测试 | 状态 | 说明 |
+|------|------|------|
+| TestProperty8_PublishStateTransition | ✅ PASS | 需要数据库 |
+| TestProperty8_UnpublishStateTransition | ✅ PASS | 需要数据库 |
+| TestProperty8_PublishOwnershipValidation | ✅ PASS | 需要数据库 |
+| TestProperty9_VersionPreservation | ✅ PASS | 需要数据库 |
+| TestProperty9_MultipleVersions | ✅ PASS | 需要数据库 |
+| TestProperty9_VersionOwnershipValidation | ✅ PASS | 需要数据库 |
+
+#### 下一步计划
+
+- Task 11: 实现 API Key 管理
+- Task 12: 实现 Proxy Gateway 核心
+
+---
+
 ### 2024-12-28 - Agent 构建服务实现
 
 #### 新增功能
