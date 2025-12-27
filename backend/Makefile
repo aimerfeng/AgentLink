@@ -71,15 +71,37 @@ tidy: ## Tidy dependencies
 ## Database migrations
 migrate-up: ## Run database migrations
 	@echo "Running migrations..."
-	migrate -path ./migrations -database "$(DATABASE_URL)" up
+	$(GOCMD) run ./cmd/migrate -command up -dir ./migrations
 
-migrate-down: ## Rollback database migrations
+migrate-down: ## Rollback database migrations (1 step)
 	@echo "Rolling back migrations..."
-	migrate -path ./migrations -database "$(DATABASE_URL)" down 1
+	$(GOCMD) run ./cmd/migrate -command down -steps 1 -dir ./migrations
+
+migrate-down-all: ## Rollback all database migrations
+	@echo "Rolling back all migrations..."
+	$(GOCMD) run ./cmd/migrate -command down -dir ./migrations
+
+migrate-version: ## Show current migration version
+	@echo "Checking migration version..."
+	$(GOCMD) run ./cmd/migrate -command version -dir ./migrations
+
+migrate-force: ## Force migration version (usage: make migrate-force version=1)
+	@echo "Forcing migration version..."
+	$(GOCMD) run ./cmd/migrate -command force -steps $(version) -dir ./migrations
 
 migrate-create: ## Create a new migration (usage: make migrate-create name=migration_name)
 	@echo "Creating migration..."
-	migrate create -ext sql -dir ./migrations -seq $(name)
+	@if [ -z "$(name)" ]; then echo "Error: name is required. Usage: make migrate-create name=migration_name"; exit 1; fi
+	@NEXT_NUM=$$(ls -1 ./migrations/*.up.sql 2>/dev/null | wc -l | xargs); \
+	NEXT_NUM=$$(printf "%06d" $$((NEXT_NUM + 1))); \
+	touch "./migrations/$${NEXT_NUM}_$(name).up.sql"; \
+	touch "./migrations/$${NEXT_NUM}_$(name).down.sql"; \
+	echo "Created migrations/$${NEXT_NUM}_$(name).up.sql and migrations/$${NEXT_NUM}_$(name).down.sql"
+
+migrate-build: ## Build migration binary
+	@echo "Building migration tool..."
+	@mkdir -p $(BUILD_DIR)
+	$(GOBUILD) -o $(BUILD_DIR)/migrate ./cmd/migrate
 
 ## Docker targets
 docker-build: ## Build Docker images

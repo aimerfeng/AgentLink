@@ -59,15 +59,15 @@
     - 创建各服务的 Dockerfile
     - _Requirements: 设计文档 Deployment Architecture_
 
-- [ ] 2. 数据库设计与迁移
-  - [ ] 2.1 创建 PostgreSQL Schema
+- [x] 2. 数据库设计与迁移
+  - [x] 2.1 创建 PostgreSQL Schema
     - 实现 users、agents、api_keys、quotas 等核心表
     - 创建索引和约�?
     - _Requirements: R1, R2, R4, 设计文档 Data Models_
-  - [ ] 2.2 配置 pgvector 扩展
+  - [x] 2.2 配置 pgvector 扩展
     - 创建 knowledge_embeddings 表和向量索引
     - _Requirements: R9, 设计文档 Vector Database Schema_
-  - [ ] 2.3 实现数据库迁移工�?
+  - [x] 2.3 实现数据库迁移工�?
     - 使用 golang-migrate 管理迁移
     - _Requirements: 设计文档 Data Models_
 
