@@ -4,6 +4,9 @@ import (
 	"net/http"
 
 	"github.com/aimerfeng/AgentLink/internal/config"
+	"github.com/aimerfeng/AgentLink/internal/logging"
+	"github.com/aimerfeng/AgentLink/internal/middleware"
+	"github.com/aimerfeng/AgentLink/internal/monitoring"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,8 +23,13 @@ func NewProxyServer(cfg *config.Config) *ProxyServer {
 	}
 
 	router := gin.New()
+
+	// Add middleware in order
 	router.Use(gin.Recovery())
-	router.Use(gin.Logger())
+	router.Use(middleware.RequestID())
+	router.Use(middleware.CORS(cfg.CORS.AllowedOrigins))
+	router.Use(monitoring.MetricsMiddleware())
+	router.Use(logging.RequestLogger())
 
 	srv := &ProxyServer{
 		config: cfg,

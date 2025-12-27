@@ -71,16 +71,16 @@
     - 使用 golang-migrate 管理迁移
     - _Requirements: 设计文档 Data Models_
 
-- [ ] 3. 配置管理与基础设施
-  - [ ] 3.1 实现配置加载模块
+- [x] 3. 配置管理与基础设施
+  - [x] 3.1 实现配置加载模块
     - 从环境变量加载配�?
     - 实现配置验证
     - _Requirements: 设计文档 Configuration Management_
-  - [ ] 3.2 实现 Redis 连接�?
+  - [x] 3.2 实现 Redis 连接�?
     - 配置 Redis 客户�?
     - 实现连接健康检�?
     - _Requirements: R5.6, 设计文档 Redis 数据结构_
-  - [ ] 3.3 实现日志和监控基础
+  - [x] 3.3 实现日志和监控基础
     - 配置 zerolog 结构化日�?
     - 配置 Prometheus 指标收集
     - _Requirements: R18.6, 设计文档 Monitoring & Observability_
