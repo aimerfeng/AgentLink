@@ -16,10 +16,11 @@ import (
 
 // APIServer represents the main API server
 type APIServer struct {
-	config      *config.Config
-	router      *gin.Engine
-	db          *pgxpool.Pool
-	authService *auth.Service
+	config           *config.Config
+	router           *gin.Engine
+	db               *pgxpool.Pool
+	authService      *auth.Service
+	jwtAuthenticator *middleware.JWTAuthenticator
 }
 
 // NewAPIServer creates a new API server instance
@@ -40,11 +41,15 @@ func NewAPIServer(cfg *config.Config, db *pgxpool.Pool) *APIServer {
 	// Create auth service
 	authService := auth.NewService(db, &cfg.JWT, &cfg.Quota)
 
+	// Create JWT authenticator for middleware
+	jwtAuthenticator := middleware.NewJWTAuthenticator(&cfg.JWT)
+
 	srv := &APIServer{
-		config:      cfg,
-		router:      router,
-		db:          db,
-		authService: authService,
+		config:           cfg,
+		router:           router,
+		db:               db,
+		authService:      authService,
+		jwtAuthenticator: jwtAuthenticator,
 	}
 
 	srv.setupRoutes()
@@ -73,18 +78,20 @@ func (s *APIServer) setupRoutes() {
 			authGroup.POST("/refresh", s.handleRefresh)
 		}
 
-		// Creator routes (protected)
+		// Creator routes (protected - requires creator role)
 		creators := v1.Group("/creators")
-		creators.Use(s.authMiddleware())
+		creators.Use(s.jwtAuthenticator.JWTAuth())
+		creators.Use(middleware.RequireCreator())
 		{
 			creators.GET("/me", s.handleGetCreator)
 			creators.PUT("/me", s.handleUpdateCreator)
 			creators.PUT("/me/wallet", s.handleBindWallet)
 		}
 
-		// Agent routes (protected)
+		// Agent routes (protected - requires creator role for management)
 		agents := v1.Group("/agents")
-		agents.Use(s.authMiddleware())
+		agents.Use(s.jwtAuthenticator.JWTAuth())
+		agents.Use(middleware.RequireCreator())
 		{
 			agents.POST("/", s.handleCreateAgent)
 			agents.GET("/", s.handleListAgents)
@@ -104,9 +111,10 @@ func (s *APIServer) setupRoutes() {
 			marketplace.GET("/featured", s.handleGetFeatured)
 		}
 
-		// Developer routes (protected)
+		// Developer routes (protected - requires developer role)
 		developers := v1.Group("/developers")
-		developers.Use(s.authMiddleware())
+		developers.Use(s.jwtAuthenticator.JWTAuth())
+		developers.Use(middleware.RequireDeveloper())
 		{
 			developers.GET("/me", s.handleGetDeveloper)
 			developers.GET("/keys", s.handleListAPIKeys)
@@ -115,29 +123,44 @@ func (s *APIServer) setupRoutes() {
 			developers.GET("/usage", s.handleGetUsage)
 		}
 
-		// Payment routes (protected)
+		// Payment routes (protected - requires any authenticated user)
 		payments := v1.Group("/payments")
 		{
-			payments.POST("/checkout", s.authMiddleware(), s.handleCheckout)
+			payments.POST("/checkout", s.jwtAuthenticator.JWTAuth(), s.handleCheckout)
 			payments.POST("/webhook/stripe", s.handleStripeWebhook)
 			payments.POST("/webhook/coinbase", s.handleCoinbaseWebhook)
-			payments.GET("/history", s.authMiddleware(), s.handlePaymentHistory)
+			payments.GET("/history", s.jwtAuthenticator.JWTAuth(), s.handlePaymentHistory)
 		}
 
-		// Review routes
+		// Review routes (mixed - some public, some protected)
 		reviews := v1.Group("/reviews")
 		{
-			reviews.POST("/agents/:id", s.authMiddleware(), s.handleSubmitReview)
+			reviews.POST("/agents/:id", s.jwtAuthenticator.JWTAuth(), s.handleSubmitReview)
 			reviews.GET("/agents/:id", s.handleGetReviews)
 		}
 
-		// Webhook routes (protected)
+		// Webhook routes (protected - requires developer role)
 		webhooks := v1.Group("/webhooks")
-		webhooks.Use(s.authMiddleware())
+		webhooks.Use(s.jwtAuthenticator.JWTAuth())
+		webhooks.Use(middleware.RequireDeveloper())
 		{
 			webhooks.GET("/", s.handleListWebhooks)
 			webhooks.POST("/", s.handleCreateWebhook)
 			webhooks.DELETE("/:id", s.handleDeleteWebhook)
+		}
+
+		// Admin routes (protected - requires admin role)
+		admin := v1.Group("/admin")
+		admin.Use(s.jwtAuthenticator.JWTAuth())
+		admin.Use(middleware.RequireAdmin())
+		{
+			admin.GET("/dashboard/stats", s.handleAdminStats)
+			admin.GET("/users", s.handleAdminListUsers)
+			admin.GET("/users/:id", s.handleAdminGetUser)
+			admin.PUT("/users/:id/status", s.handleAdminUpdateUserStatus)
+			admin.GET("/moderation/queue", s.handleAdminModerationQueue)
+			admin.POST("/moderation/reviews/:id/approve", s.handleAdminApproveReview)
+			admin.POST("/moderation/reviews/:id/reject", s.handleAdminRejectReview)
 		}
 	}
 }
@@ -148,48 +171,6 @@ func (s *APIServer) healthCheck(c *gin.Context) {
 		"status":  "healthy",
 		"service": "api",
 	})
-}
-
-
-// authMiddleware validates JWT tokens
-func (s *APIServer) authMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			respondError(c, apierrors.ErrInvalidCredentialsError)
-			c.Abort()
-			return
-		}
-
-		// Extract token from "Bearer <token>"
-		const bearerPrefix = "Bearer "
-		if len(authHeader) < len(bearerPrefix) || authHeader[:len(bearerPrefix)] != bearerPrefix {
-			respondError(c, apierrors.ErrInvalidCredentialsError)
-			c.Abort()
-			return
-		}
-
-		tokenString := authHeader[len(bearerPrefix):]
-
-		// Validate token
-		claims, err := s.authService.ValidateAccessToken(tokenString)
-		if err != nil {
-			if err == auth.ErrTokenExpired {
-				respondError(c, apierrors.ErrTokenExpiredError)
-			} else {
-				respondError(c, apierrors.ErrInvalidCredentialsError)
-			}
-			c.Abort()
-			return
-		}
-
-		// Set user info in context
-		c.Set("user_id", claims.UserID)
-		c.Set("user_type", claims.UserType)
-		c.Set("email", claims.Email)
-
-		c.Next()
-	}
 }
 
 // handleRegister handles user registration
@@ -287,14 +268,14 @@ func (s *APIServer) handleUpdateCreator(c *gin.Context)   { c.JSON(501, gin.H{"e
 
 // handleBindWallet handles wallet address binding for creators
 func (s *APIServer) handleBindWallet(c *gin.Context) {
-	// Get user ID from context (set by auth middleware)
-	userIDStr, exists := c.Get("user_id")
-	if !exists {
+	// Get user ID from context (set by JWT auth middleware)
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
 		respondError(c, apierrors.ErrInvalidCredentialsError)
 		return
 	}
 
-	userID, err := uuid.Parse(userIDStr.(string))
+	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		respondError(c, apierrors.ErrInvalidCredentialsError)
 		return
@@ -350,3 +331,12 @@ func (s *APIServer) handleGetReviews(c *gin.Context)      { c.JSON(501, gin.H{"e
 func (s *APIServer) handleListWebhooks(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleCreateWebhook(c *gin.Context)   { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleDeleteWebhook(c *gin.Context)   { c.JSON(501, gin.H{"error": "not implemented"}) }
+
+// Admin handlers (placeholders)
+func (s *APIServer) handleAdminStats(c *gin.Context)            { c.JSON(501, gin.H{"error": "not implemented"}) }
+func (s *APIServer) handleAdminListUsers(c *gin.Context)        { c.JSON(501, gin.H{"error": "not implemented"}) }
+func (s *APIServer) handleAdminGetUser(c *gin.Context)          { c.JSON(501, gin.H{"error": "not implemented"}) }
+func (s *APIServer) handleAdminUpdateUserStatus(c *gin.Context) { c.JSON(501, gin.H{"error": "not implemented"}) }
+func (s *APIServer) handleAdminModerationQueue(c *gin.Context)  { c.JSON(501, gin.H{"error": "not implemented"}) }
+func (s *APIServer) handleAdminApproveReview(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
+func (s *APIServer) handleAdminRejectReview(c *gin.Context)     { c.JSON(501, gin.H{"error": "not implemented"}) }

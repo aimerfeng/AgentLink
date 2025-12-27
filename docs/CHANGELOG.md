@@ -2,6 +2,135 @@
 
 ## [Unreleased]
 
+### 2024-12-28 - 认证中间件实现
+
+#### 新增功能
+
+**Task 7: 实现认证中间件** ✅
+
+##### 7.1 创建 JWT 验证中间件
+- 创建 `JWTAuthenticator` 结构体，封装 JWT 验证逻辑
+- 实现 `JWTAuth()` 中间件函数：
+  - 验证 Authorization header 存在性
+  - 提取 Bearer Token
+  - 验证 Token 签名和有效期
+  - 区分 Access Token 和 Refresh Token（仅接受 Access Token）
+  - 将用户信息（UserID、UserType、Email）注入 Context
+- 实现 `ValidateAccessToken()` 方法用于 Token 验证
+- 实现 `extractBearerToken()` 辅助函数
+
+##### 7.2 创建角色授权中间件
+- 实现 `RequireRole()` 通用角色检查中间件
+- 支持多角色授权（允许多个角色访问同一资源）
+- 创建便捷中间件：
+  - `RequireCreator()` - 仅创作者可访问
+  - `RequireDeveloper()` - 仅开发者可访问
+  - `RequireAdmin()` - 仅管理员可访问
+  - `RequireCreatorOrDeveloper()` - 创作者或开发者可访问
+- 实现 Context 辅助函数：
+  - `GetUserIDFromContext()` - 获取用户 ID
+  - `GetUserTypeFromContext()` - 获取用户类型
+  - `GetEmailFromContext()` - 获取用户邮箱
+  - `GetClaimsFromContext()` - 获取完整 Claims
+
+##### 7.3 附加中间件
+- 实现 `RequestID()` 中间件 - 为每个请求生成唯一追踪 ID
+- 实现 `CORS()` 中间件 - 配置跨域资源共享
+
+#### 测试覆盖
+
+- JWT 验证测试：
+  - 有效 Token 验证通过
+  - 缺失 Token 返回 401
+  - 无效 Token 返回 401
+  - 过期 Token 返回 401
+  - Refresh Token 被拒绝（仅接受 Access Token）
+- 角色授权测试：
+  - 允许的角色可以访问
+  - 不允许的角色返回 403
+  - 多角色授权正确工作
+  - Admin 角色验证
+- 辅助函数测试：
+  - Bearer Token 提取
+  - Context 辅助函数
+
+#### 修改文件
+
+```
+backend/internal/middleware/
+├── middleware.go      # JWT 验证和角色授权中间件
+└── middleware_test.go # 完整测试覆盖
+```
+
+#### 新增错误类型
+
+- `ErrInvalidToken` - 无效的 Token
+- `ErrTokenExpired` - Token 已过期
+
+#### Context Keys
+
+| Key | 类型 | 描述 |
+|-----|------|------|
+| `user_id` | string | 用户 UUID |
+| `user_type` | string | 用户类型 (creator/developer/admin) |
+| `email` | string | 用户邮箱 |
+| `claims` | *Claims | 完整 JWT Claims |
+| `request_id` | string | 请求追踪 ID |
+
+#### 需求覆盖
+
+| 需求 | 描述 | 状态 |
+|------|------|------|
+| R1.3 | JWT Token 验证 | ✅ |
+| 设计文档 | Security Design - 角色授权 | ✅ |
+
+#### 使用示例
+
+```go
+// 路由配置示例
+router := gin.New()
+
+// 公开路由
+router.POST("/api/v1/auth/login", handleLogin)
+router.POST("/api/v1/auth/register", handleRegister)
+
+// 需要认证的路由
+authenticated := router.Group("/api/v1")
+authenticated.Use(middleware.JWTAuth())
+{
+    // 所有认证用户可访问
+    authenticated.GET("/me", handleGetProfile)
+    
+    // 仅创作者可访问
+    creators := authenticated.Group("/creators")
+    creators.Use(middleware.RequireCreator())
+    {
+        creators.PUT("/me/wallet", handleBindWallet)
+        creators.POST("/agents", handleCreateAgent)
+    }
+    
+    // 仅开发者可访问
+    developers := authenticated.Group("/developers")
+    developers.Use(middleware.RequireDeveloper())
+    {
+        developers.POST("/keys", handleCreateAPIKey)
+    }
+    
+    // 仅管理员可访问
+    admin := authenticated.Group("/admin")
+    admin.Use(middleware.RequireAdmin())
+    {
+        admin.GET("/users", handleListUsers)
+    }
+}
+```
+
+#### 下一步计划
+
+- Task 8: Checkpoint - 认证系统验证
+
+---
+
 ### 2024-12-28 - 钱包绑定功能实现
 
 #### 新增功能
