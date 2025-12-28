@@ -33,8 +33,10 @@ type Payment struct {
 	PaymentMethod  PaymentMethod   `json:"payment_method" db:"payment_method"`
 	PaymentID      *string         `json:"payment_id,omitempty" db:"payment_id"`
 	Status         PaymentStatus   `json:"status" db:"status"`
+	FailureReason  *string         `json:"failure_reason,omitempty" db:"failure_reason"`
 	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
 	CompletedAt    *time.Time      `json:"completed_at,omitempty" db:"completed_at"`
+	FailedAt       *time.Time      `json:"failed_at,omitempty" db:"failed_at"`
 }
 
 // SettlementStatus represents the status of a settlement

@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/aimerfeng/AgentLink/internal/logging"
 	"github.com/aimerfeng/AgentLink/internal/middleware"
 	"github.com/aimerfeng/AgentLink/internal/monitoring"
+	"github.com/aimerfeng/AgentLink/internal/payment"
+	"github.com/aimerfeng/AgentLink/internal/trial"
+	"github.com/aimerfeng/AgentLink/internal/withdrawal"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,13 +24,16 @@ import (
 
 // APIServer represents the main API server
 type APIServer struct {
-	config           *config.Config
-	router           *gin.Engine
-	db               *pgxpool.Pool
-	authService      *auth.Service
-	agentService     *agent.Service
-	apiKeyService    *apikey.Service
-	jwtAuthenticator *middleware.JWTAuthenticator
+	config             *config.Config
+	router             *gin.Engine
+	db                 *pgxpool.Pool
+	authService        *auth.Service
+	agentService       *agent.Service
+	apiKeyService      *apikey.Service
+	paymentService     *payment.Service
+	trialService       *trial.Service
+	withdrawalService  *withdrawal.Service
+	jwtAuthenticator   *middleware.JWTAuthenticator
 }
 
 // NewAPIServer creates a new API server instance
@@ -57,17 +64,29 @@ func NewAPIServer(cfg *config.Config, db *pgxpool.Pool) *APIServer {
 	// Create API key service
 	apiKeyService := apikey.NewService(db)
 
+	// Create payment service
+	paymentService := payment.NewService(db, &cfg.Stripe, &cfg.Coinbase, cfg.Server.URL, cfg.Features.CryptoPaymentEnabled)
+
+	// Create trial service
+	trialService := trial.NewService(db, &cfg.Quota)
+
+	// Create withdrawal service
+	withdrawalService := withdrawal.NewService(db, nil) // Uses default config
+
 	// Create JWT authenticator for middleware
 	jwtAuthenticator := middleware.NewJWTAuthenticator(&cfg.JWT)
 
 	srv := &APIServer{
-		config:           cfg,
-		router:           router,
-		db:               db,
-		authService:      authService,
-		agentService:     agentService,
-		apiKeyService:    apiKeyService,
-		jwtAuthenticator: jwtAuthenticator,
+		config:             cfg,
+		router:             router,
+		db:                 db,
+		authService:        authService,
+		agentService:       agentService,
+		apiKeyService:      apiKeyService,
+		paymentService:     paymentService,
+		trialService:       trialService,
+		withdrawalService:  withdrawalService,
+		jwtAuthenticator:   jwtAuthenticator,
 	}
 
 	srv.setupRoutes()
@@ -120,6 +139,19 @@ func (s *APIServer) setupRoutes() {
 			agents.GET("/:id/versions", s.handleListAgentVersions)
 			agents.GET("/:id/versions/:version", s.handleGetAgentVersion)
 			agents.POST("/:id/knowledge", s.handleUploadKnowledge)
+			// D5.4: Creator can disable trial for their agents
+			agents.PUT("/:id/trial", s.handleSetAgentTrial)
+		}
+
+		// Trial routes (protected - requires developer role)
+		trials := v1.Group("/trials")
+		trials.Use(s.jwtAuthenticator.JWTAuth())
+		trials.Use(middleware.RequireDeveloper())
+		{
+			// D5.2: Get trial info for a specific agent
+			trials.GET("/agents/:id", s.handleGetTrialInfo)
+			// Get all trial usage for the user
+			trials.GET("/", s.handleGetUserTrialUsage)
 		}
 
 		// Marketplace routes (public)
@@ -147,9 +179,12 @@ func (s *APIServer) setupRoutes() {
 		payments := v1.Group("/payments")
 		{
 			payments.POST("/checkout", s.jwtAuthenticator.JWTAuth(), s.handleCheckout)
+			payments.POST("/checkout/coinbase", s.jwtAuthenticator.JWTAuth(), s.handleCoinbaseCheckout)
 			payments.POST("/webhook/stripe", s.handleStripeWebhook)
 			payments.POST("/webhook/coinbase", s.handleCoinbaseWebhook)
 			payments.GET("/history", s.jwtAuthenticator.JWTAuth(), s.handlePaymentHistory)
+			payments.GET("/packages", s.handleGetPackages)
+			payments.GET("/quota", s.jwtAuthenticator.JWTAuth(), s.handleGetQuota)
 		}
 
 		// Review routes (mixed - some public, some protected)
@@ -181,6 +216,23 @@ func (s *APIServer) setupRoutes() {
 			admin.GET("/moderation/queue", s.handleAdminModerationQueue)
 			admin.POST("/moderation/reviews/:id/approve", s.handleAdminApproveReview)
 			admin.POST("/moderation/reviews/:id/reject", s.handleAdminRejectReview)
+			// Admin withdrawal management
+			admin.GET("/withdrawals/pending", s.handleAdminGetPendingWithdrawals)
+			admin.POST("/withdrawals/:id/process", s.handleAdminProcessWithdrawal)
+			admin.POST("/withdrawals/:id/complete", s.handleAdminCompleteWithdrawal)
+			admin.POST("/withdrawals/:id/fail", s.handleAdminFailWithdrawal)
+		}
+
+		// Withdrawal routes (protected - requires creator role)
+		withdrawals := v1.Group("/withdrawals")
+		withdrawals.Use(s.jwtAuthenticator.JWTAuth())
+		withdrawals.Use(middleware.RequireCreator())
+		{
+			withdrawals.GET("/earnings", s.handleGetEarnings)
+			withdrawals.POST("/", s.handleCreateWithdrawal)
+			withdrawals.GET("/", s.handleGetWithdrawalHistory)
+			withdrawals.GET("/:id", s.handleGetWithdrawal)
+			withdrawals.GET("/config", s.handleGetWithdrawalConfig)
 		}
 	}
 }
@@ -849,10 +901,242 @@ func (s *APIServer) handleDeleteAPIKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "API key revoked successfully"})
 }
 func (s *APIServer) handleGetUsage(c *gin.Context)        { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleCheckout(c *gin.Context)        { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleStripeWebhook(c *gin.Context)   { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleCoinbaseWebhook(c *gin.Context) { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handlePaymentHistory(c *gin.Context)  { c.JSON(501, gin.H{"error": "not implemented"}) }
+
+// handleCheckout handles Stripe checkout session creation
+func (s *APIServer) handleCheckout(c *gin.Context) {
+	if s.paymentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Payment service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse request body
+	var req payment.CreateCheckoutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Create checkout session
+	resp, err := s.paymentService.CreateCheckoutSession(c.Request.Context(), userID, &req)
+	if err != nil {
+		switch err {
+		case payment.ErrInvalidAmount:
+			respondError(c, apierrors.NewValidationError("Invalid package ID"))
+		case payment.ErrUserNotFound:
+			respondError(c, apierrors.ErrUserNotFoundError)
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleCoinbaseCheckout handles Coinbase Commerce charge creation
+func (s *APIServer) handleCoinbaseCheckout(c *gin.Context) {
+	if s.paymentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Payment service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse request body
+	var req payment.CoinbaseChargeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Create Coinbase charge
+	resp, err := s.paymentService.CreateCoinbaseCharge(c.Request.Context(), userID, &req)
+	if err != nil {
+		switch err {
+		case payment.ErrInvalidAmount:
+			respondError(c, apierrors.NewValidationError("Invalid package ID"))
+		case payment.ErrUserNotFound:
+			respondError(c, apierrors.ErrUserNotFoundError)
+		case payment.ErrCryptoPaymentDisabled:
+			respondError(c, apierrors.NewInvalidRequestError("Cryptocurrency payment is currently disabled"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleStripeWebhook handles Stripe webhook events
+func (s *APIServer) handleStripeWebhook(c *gin.Context) {
+	if s.paymentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Payment service not available"))
+		return
+	}
+
+	// Read the request body
+	payload, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Failed to read request body"))
+		return
+	}
+
+	// Get the Stripe signature header
+	signature := c.GetHeader("Stripe-Signature")
+
+	// Process the webhook
+	err = s.paymentService.HandleStripeWebhook(c.Request.Context(), payload, signature)
+	if err != nil {
+		if err == payment.ErrInvalidWebhookSig {
+			respondError(c, apierrors.NewValidationError("Invalid webhook signature"))
+			return
+		}
+		// Log the error but return 200 to prevent Stripe from retrying
+		c.JSON(http.StatusOK, gin.H{"received": true, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
+// handleCoinbaseWebhook handles Coinbase Commerce webhook events
+func (s *APIServer) handleCoinbaseWebhook(c *gin.Context) {
+	if s.paymentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Payment service not available"))
+		return
+	}
+
+	// Read the request body
+	payload, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Failed to read request body"))
+		return
+	}
+
+	// Get the Coinbase signature header
+	signature := c.GetHeader("X-CC-Webhook-Signature")
+
+	// Process the webhook
+	err = s.paymentService.HandleCoinbaseWebhook(c.Request.Context(), payload, signature)
+	if err != nil {
+		if err == payment.ErrInvalidWebhookSig {
+			respondError(c, apierrors.NewValidationError("Invalid webhook signature"))
+			return
+		}
+		// Log the error but return 200 to prevent Coinbase from retrying
+		c.JSON(http.StatusOK, gin.H{"received": true, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"received": true})
+}
+
+// handlePaymentHistory handles retrieving payment history
+func (s *APIServer) handlePaymentHistory(c *gin.Context) {
+	if s.paymentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Payment service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse pagination params
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	// Get payment history
+	resp, err := s.paymentService.GetPaymentHistory(c.Request.Context(), userID, page, pageSize)
+	if err != nil {
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleGetPackages handles retrieving available quota packages
+func (s *APIServer) handleGetPackages(c *gin.Context) {
+	if s.paymentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Payment service not available"))
+		return
+	}
+
+	packages := s.paymentService.GetPackages()
+	c.JSON(http.StatusOK, gin.H{
+		"packages":       packages,
+		"crypto_enabled": s.paymentService.IsCryptoPaymentEnabled(),
+	})
+}
+
+// handleGetQuota handles retrieving user's current quota
+func (s *APIServer) handleGetQuota(c *gin.Context) {
+	if s.paymentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Payment service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Get quota info
+	resp, err := s.paymentService.GetUserQuota(c.Request.Context(), userID)
+	if err != nil {
+		if err == payment.ErrUserNotFound {
+			respondError(c, apierrors.ErrUserNotFoundError)
+			return
+		}
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
 func (s *APIServer) handleSubmitReview(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleGetReviews(c *gin.Context)      { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleListWebhooks(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
@@ -867,3 +1151,496 @@ func (s *APIServer) handleAdminUpdateUserStatus(c *gin.Context) { c.JSON(501, gi
 func (s *APIServer) handleAdminModerationQueue(c *gin.Context)  { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleAdminApproveReview(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleAdminRejectReview(c *gin.Context)     { c.JSON(501, gin.H{"error": "not implemented"}) }
+
+
+// ============================================
+// Trial Handlers
+// ============================================
+
+// SetAgentTrialRequest represents a request to set agent trial status
+type SetAgentTrialRequest struct {
+	TrialEnabled bool `json:"trial_enabled"`
+}
+
+// handleSetAgentTrial handles setting trial enabled/disabled for an agent
+// D5.4: THE Creator SHALL have option to disable trial for their Agents
+func (s *APIServer) handleSetAgentTrial(c *gin.Context) {
+	if s.agentService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Agent service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Parse request body
+	var req SetAgentTrialRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Set trial enabled status
+	resp, err := s.agentService.SetTrialEnabled(c.Request.Context(), agentID, userID, req.TrialEnabled)
+	if err != nil {
+		switch err {
+		case agent.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		case agent.ErrAgentNotOwned:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrAgentNotOwned,
+				Message:    "You do not own this agent",
+				HTTPStatus: http.StatusForbidden,
+			})
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleGetTrialInfo handles getting trial info for a specific agent
+// D5.2: WHEN a developer uses trial calls, THE System SHALL clearly indicate remaining trial quota
+func (s *APIServer) handleGetTrialInfo(c *gin.Context) {
+	if s.trialService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Trial service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse agent ID
+	agentIDStr := c.Param("id")
+	agentID, err := uuid.Parse(agentIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid agent ID"))
+		return
+	}
+
+	// Get trial info
+	info, err := s.trialService.GetTrialInfo(c.Request.Context(), userID, agentID)
+	if err != nil {
+		switch err {
+		case trial.ErrAgentNotFound:
+			respondError(c, apierrors.ErrAgentNotFoundError)
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, info)
+}
+
+// handleGetUserTrialUsage handles getting all trial usage for a user
+func (s *APIServer) handleGetUserTrialUsage(c *gin.Context) {
+	if s.trialService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Trial service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Get trial usage with agent names
+	usage, err := s.trialService.GetUserTrialUsageWithAgentNames(c.Request.Context(), userID)
+	if err != nil {
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"trial_usage":         usage,
+		"trial_calls_per_agent": s.trialService.GetTrialCallsPerAgent(),
+	})
+}
+
+
+// ============================================
+// Withdrawal Handlers
+// ============================================
+
+// handleGetEarnings handles getting creator earnings information
+func (s *APIServer) handleGetEarnings(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Get earnings info
+	info, err := s.withdrawalService.GetEarningsInfo(c.Request.Context(), userID)
+	if err != nil {
+		switch err {
+		case withdrawal.ErrCreatorNotFound:
+			respondError(c, apierrors.ErrUserNotFoundError)
+		case withdrawal.ErrNotCreator:
+			respondError(c, apierrors.NewInvalidRequestError("Only creators can view earnings"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, info)
+}
+
+// handleCreateWithdrawal handles creating a new withdrawal request
+func (s *APIServer) handleCreateWithdrawal(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse request body
+	var req withdrawal.CreateWithdrawalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Create withdrawal
+	resp, err := s.withdrawalService.CreateWithdrawal(c.Request.Context(), userID, &req)
+	if err != nil {
+		switch err {
+		case withdrawal.ErrInsufficientBalance:
+			respondError(c, apierrors.NewInvalidRequestError("Insufficient balance for withdrawal"))
+		case withdrawal.ErrBelowMinimumThreshold:
+			config := s.withdrawalService.GetConfig()
+			respondError(c, apierrors.NewValidationError(fmt.Sprintf("Withdrawal amount must be at least $%s", config.MinimumAmount.String())))
+		case withdrawal.ErrCreatorNotFound:
+			respondError(c, apierrors.ErrUserNotFoundError)
+		case withdrawal.ErrNotCreator:
+			respondError(c, apierrors.NewInvalidRequestError("Only creators can request withdrawals"))
+		case withdrawal.ErrNoWalletAddress:
+			respondError(c, apierrors.NewValidationError("No wallet address configured for crypto withdrawal"))
+		case withdrawal.ErrInvalidWithdrawalMethod:
+			respondError(c, apierrors.NewValidationError("Invalid withdrawal method"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, resp)
+}
+
+// handleGetWithdrawalHistory handles getting withdrawal history for a creator
+func (s *APIServer) handleGetWithdrawalHistory(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse pagination params
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	// Get withdrawal history
+	resp, err := s.withdrawalService.GetWithdrawalHistory(c.Request.Context(), userID, page, pageSize)
+	if err != nil {
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleGetWithdrawal handles getting a specific withdrawal
+func (s *APIServer) handleGetWithdrawal(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse withdrawal ID
+	withdrawalIDStr := c.Param("id")
+	withdrawalID, err := uuid.Parse(withdrawalIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid withdrawal ID"))
+		return
+	}
+
+	// Get withdrawal
+	w, err := s.withdrawalService.GetWithdrawalByID(c.Request.Context(), withdrawalID)
+	if err != nil {
+		if err == withdrawal.ErrWithdrawalNotFound {
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrInvalidRequest,
+				Message:    "Withdrawal not found",
+				HTTPStatus: http.StatusNotFound,
+			})
+			return
+		}
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	// Verify ownership
+	if w.CreatorID != userID {
+		respondError(c, apierrors.ErrForbiddenError)
+		return
+	}
+
+	c.JSON(http.StatusOK, w)
+}
+
+// handleGetWithdrawalConfig handles getting withdrawal configuration
+func (s *APIServer) handleGetWithdrawalConfig(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	config := s.withdrawalService.GetConfig()
+	c.JSON(http.StatusOK, config)
+}
+
+// ============================================
+// Admin Withdrawal Handlers
+// ============================================
+
+// handleAdminGetPendingWithdrawals handles getting all pending withdrawals (admin)
+func (s *APIServer) handleAdminGetPendingWithdrawals(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Parse pagination params
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	// Get pending withdrawals
+	resp, err := s.withdrawalService.GetPendingWithdrawals(c.Request.Context(), page, pageSize)
+	if err != nil {
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleAdminProcessWithdrawal handles marking a withdrawal as processing (admin)
+func (s *APIServer) handleAdminProcessWithdrawal(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Parse withdrawal ID
+	withdrawalIDStr := c.Param("id")
+	withdrawalID, err := uuid.Parse(withdrawalIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid withdrawal ID"))
+		return
+	}
+
+	// Set withdrawal to processing
+	err = s.withdrawalService.SetWithdrawalProcessing(c.Request.Context(), withdrawalID)
+	if err != nil {
+		switch err {
+		case withdrawal.ErrWithdrawalNotFound:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrInvalidRequest,
+				Message:    "Withdrawal not found",
+				HTTPStatus: http.StatusNotFound,
+			})
+		case withdrawal.ErrWithdrawalNotPending:
+			respondError(c, apierrors.NewInvalidRequestError("Withdrawal is not in pending status"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Withdrawal marked as processing"})
+}
+
+// AdminCompleteWithdrawalRequest represents a request to complete a withdrawal
+type AdminCompleteWithdrawalRequest struct {
+	ExternalTxID string `json:"external_tx_id" binding:"required"`
+}
+
+// handleAdminCompleteWithdrawal handles completing a withdrawal (admin)
+func (s *APIServer) handleAdminCompleteWithdrawal(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Parse withdrawal ID
+	withdrawalIDStr := c.Param("id")
+	withdrawalID, err := uuid.Parse(withdrawalIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid withdrawal ID"))
+		return
+	}
+
+	// Parse request body
+	var req AdminCompleteWithdrawalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Complete withdrawal
+	err = s.withdrawalService.CompleteWithdrawal(c.Request.Context(), withdrawalID, req.ExternalTxID)
+	if err != nil {
+		switch err {
+		case withdrawal.ErrWithdrawalNotFound:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrInvalidRequest,
+				Message:    "Withdrawal not found",
+				HTTPStatus: http.StatusNotFound,
+			})
+		case withdrawal.ErrWithdrawalAlreadyDone:
+			respondError(c, apierrors.NewInvalidRequestError("Withdrawal already completed or failed"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Withdrawal completed successfully"})
+}
+
+// AdminFailWithdrawalRequest represents a request to fail a withdrawal
+type AdminFailWithdrawalRequest struct {
+	Reason string `json:"reason" binding:"required"`
+}
+
+// handleAdminFailWithdrawal handles failing a withdrawal and restoring funds (admin)
+func (s *APIServer) handleAdminFailWithdrawal(c *gin.Context) {
+	if s.withdrawalService == nil {
+		respondError(c, apierrors.NewInvalidRequestError("Withdrawal service not available"))
+		return
+	}
+
+	// Parse withdrawal ID
+	withdrawalIDStr := c.Param("id")
+	withdrawalID, err := uuid.Parse(withdrawalIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid withdrawal ID"))
+		return
+	}
+
+	// Parse request body
+	var req AdminFailWithdrawalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, apierrors.NewValidationError(err.Error()))
+		return
+	}
+
+	// Fail withdrawal (this also restores funds)
+	err = s.withdrawalService.FailWithdrawal(c.Request.Context(), withdrawalID, req.Reason)
+	if err != nil {
+		switch err {
+		case withdrawal.ErrWithdrawalNotFound:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrInvalidRequest,
+				Message:    "Withdrawal not found",
+				HTTPStatus: http.StatusNotFound,
+			})
+		case withdrawal.ErrWithdrawalAlreadyDone:
+			respondError(c, apierrors.NewInvalidRequestError("Withdrawal already completed or failed"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Withdrawal failed and funds restored"})
+}

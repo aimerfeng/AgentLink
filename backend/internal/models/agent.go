@@ -33,6 +33,7 @@ type Agent struct {
 	ReviewCount     int             `json:"review_count" db:"review_count"`
 	TokenID         *int64          `json:"token_id,omitempty" db:"token_id"`
 	TokenTxHash     *string         `json:"token_tx_hash,omitempty" db:"token_tx_hash"`
+	TrialEnabled    bool            `json:"trial_enabled" db:"trial_enabled"` // D5.4: Creator can disable trial
 	Version         int             `json:"version" db:"version"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at" db:"updated_at"`

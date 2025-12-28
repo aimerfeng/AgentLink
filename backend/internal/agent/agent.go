@@ -105,6 +105,7 @@ type AgentResponse struct {
 	ReviewCount   int                 `json:"review_count"`
 	TokenID       *int64              `json:"token_id,omitempty"`
 	TokenTxHash   *string             `json:"token_tx_hash,omitempty"`
+	TrialEnabled  bool                `json:"trial_enabled"` // D5.4: Whether trial is enabled
 	Version       int                 `json:"version"`
 	CreatedAt     time.Time           `json:"created_at"`
 	UpdatedAt     time.Time           `json:"updated_at"`
@@ -241,12 +242,12 @@ func (s *Service) Create(ctx context.Context, creatorID uuid.UUID, req *CreateAg
 	err = s.db.QueryRow(ctx, `
 		INSERT INTO agents (
 			creator_id, name, description, category, status,
-			config_encrypted, config_iv, price_per_call, version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)
+			config_encrypted, config_iv, price_per_call, trial_enabled, version
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, 1)
 		RETURNING id, creator_id, name, description, category, status,
 			config_encrypted, config_iv, price_per_call, total_calls,
 			total_revenue, average_rating, review_count, token_id,
-			token_tx_hash, version, created_at, updated_at, published_at
+			token_tx_hash, COALESCE(trial_enabled, true), version, created_at, updated_at, published_at
 	`, creatorID, req.Name, req.Description, req.Category, models.AgentStatusDraft,
 		configEncrypted, configIV, req.PricePerCall,
 	).Scan(
@@ -254,7 +255,7 @@ func (s *Service) Create(ctx context.Context, creatorID uuid.UUID, req *CreateAg
 		&agent.Category, &agent.Status, &agent.ConfigEncrypted, &agent.ConfigIV,
 		&agent.PricePerCall, &agent.TotalCalls, &agent.TotalRevenue,
 		&agent.AverageRating, &agent.ReviewCount, &agent.TokenID,
-		&agent.TokenTxHash, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
+		&agent.TokenTxHash, &agent.TrialEnabled, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
 		&agent.PublishedAt,
 	)
 	if err != nil {
@@ -271,14 +272,14 @@ func (s *Service) GetByID(ctx context.Context, agentID uuid.UUID) (*models.Agent
 		SELECT id, creator_id, name, description, category, status,
 			config_encrypted, config_iv, price_per_call, total_calls,
 			total_revenue, average_rating, review_count, token_id,
-			token_tx_hash, version, created_at, updated_at, published_at
+			token_tx_hash, COALESCE(trial_enabled, true), version, created_at, updated_at, published_at
 		FROM agents WHERE id = $1
 	`, agentID).Scan(
 		&agent.ID, &agent.CreatorID, &agent.Name, &agent.Description,
 		&agent.Category, &agent.Status, &agent.ConfigEncrypted, &agent.ConfigIV,
 		&agent.PricePerCall, &agent.TotalCalls, &agent.TotalRevenue,
 		&agent.AverageRating, &agent.ReviewCount, &agent.TokenID,
-		&agent.TokenTxHash, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
+		&agent.TokenTxHash, &agent.TrialEnabled, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
 		&agent.PublishedAt,
 	)
 	if err != nil {
@@ -336,7 +337,7 @@ func (s *Service) List(ctx context.Context, creatorID uuid.UUID, page, pageSize 
 		SELECT id, creator_id, name, description, category, status,
 			config_encrypted, config_iv, price_per_call, total_calls,
 			total_revenue, average_rating, review_count, token_id,
-			token_tx_hash, version, created_at, updated_at, published_at
+			token_tx_hash, COALESCE(trial_enabled, true), version, created_at, updated_at, published_at
 		FROM agents
 		WHERE creator_id = $1
 		ORDER BY created_at DESC
@@ -355,7 +356,7 @@ func (s *Service) List(ctx context.Context, creatorID uuid.UUID, page, pageSize 
 			&agent.Category, &agent.Status, &agent.ConfigEncrypted, &agent.ConfigIV,
 			&agent.PricePerCall, &agent.TotalCalls, &agent.TotalRevenue,
 			&agent.AverageRating, &agent.ReviewCount, &agent.TokenID,
-			&agent.TokenTxHash, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
+			&agent.TokenTxHash, &agent.TrialEnabled, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
 			&agent.PublishedAt,
 		)
 		if err != nil {
@@ -465,7 +466,7 @@ func (s *Service) Update(ctx context.Context, agentID, creatorID uuid.UUID, req 
 		RETURNING id, creator_id, name, description, category, status,
 			config_encrypted, config_iv, price_per_call, total_calls,
 			total_revenue, average_rating, review_count, token_id,
-			token_tx_hash, version, created_at, updated_at, published_at
+			token_tx_hash, COALESCE(trial_enabled, true), version, created_at, updated_at, published_at
 	`, agent.Name, agent.Description, agent.Category,
 		configEncrypted, configIV, agent.PricePerCall, newVersion, agentID,
 	).Scan(
@@ -473,7 +474,7 @@ func (s *Service) Update(ctx context.Context, agentID, creatorID uuid.UUID, req 
 		&agent.Category, &agent.Status, &agent.ConfigEncrypted, &agent.ConfigIV,
 		&agent.PricePerCall, &agent.TotalCalls, &agent.TotalRevenue,
 		&agent.AverageRating, &agent.ReviewCount, &agent.TokenID,
-		&agent.TokenTxHash, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
+		&agent.TokenTxHash, &agent.TrialEnabled, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
 		&agent.PublishedAt,
 	)
 	if err != nil {
@@ -515,13 +516,13 @@ func (s *Service) Publish(ctx context.Context, agentID, creatorID uuid.UUID) (*A
 		RETURNING id, creator_id, name, description, category, status,
 			config_encrypted, config_iv, price_per_call, total_calls,
 			total_revenue, average_rating, review_count, token_id,
-			token_tx_hash, version, created_at, updated_at, published_at
+			token_tx_hash, COALESCE(trial_enabled, true), version, created_at, updated_at, published_at
 	`, models.AgentStatusActive, now, agentID).Scan(
 		&agent.ID, &agent.CreatorID, &agent.Name, &agent.Description,
 		&agent.Category, &agent.Status, &agent.ConfigEncrypted, &agent.ConfigIV,
 		&agent.PricePerCall, &agent.TotalCalls, &agent.TotalRevenue,
 		&agent.AverageRating, &agent.ReviewCount, &agent.TokenID,
-		&agent.TokenTxHash, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
+		&agent.TokenTxHash, &agent.TrialEnabled, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
 		&agent.PublishedAt,
 	)
 	if err != nil {
@@ -557,13 +558,13 @@ func (s *Service) Unpublish(ctx context.Context, agentID, creatorID uuid.UUID) (
 		RETURNING id, creator_id, name, description, category, status,
 			config_encrypted, config_iv, price_per_call, total_calls,
 			total_revenue, average_rating, review_count, token_id,
-			token_tx_hash, version, created_at, updated_at, published_at
+			token_tx_hash, COALESCE(trial_enabled, true), version, created_at, updated_at, published_at
 	`, models.AgentStatusInactive, agentID).Scan(
 		&agent.ID, &agent.CreatorID, &agent.Name, &agent.Description,
 		&agent.Category, &agent.Status, &agent.ConfigEncrypted, &agent.ConfigIV,
 		&agent.PricePerCall, &agent.TotalCalls, &agent.TotalRevenue,
 		&agent.AverageRating, &agent.ReviewCount, &agent.TokenID,
-		&agent.TokenTxHash, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
+		&agent.TokenTxHash, &agent.TrialEnabled, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
 		&agent.PublishedAt,
 	)
 	if err != nil {
@@ -589,6 +590,50 @@ func (s *Service) GetConfig(ctx context.Context, agentID uuid.UUID) (*models.Age
 	return s.decryptConfig(agent.ConfigEncrypted, agent.ConfigIV)
 }
 
+// SetTrialEnabled sets whether trial is enabled for an agent
+// D5.4: THE Creator SHALL have option to disable trial for their Agents
+func (s *Service) SetTrialEnabled(ctx context.Context, agentID, creatorID uuid.UUID, enabled bool) (*AgentResponse, error) {
+	// Get agent to verify ownership
+	agent, err := s.GetByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify ownership
+	if agent.CreatorID != creatorID {
+		return nil, ErrAgentNotOwned
+	}
+
+	// Update trial_enabled
+	err = s.db.QueryRow(ctx, `
+		UPDATE agents SET
+			trial_enabled = $1, updated_at = NOW()
+		WHERE id = $2
+		RETURNING id, creator_id, name, description, category, status,
+			config_encrypted, config_iv, price_per_call, total_calls,
+			total_revenue, average_rating, review_count, token_id,
+			token_tx_hash, COALESCE(trial_enabled, true), version, created_at, updated_at, published_at
+	`, enabled, agentID).Scan(
+		&agent.ID, &agent.CreatorID, &agent.Name, &agent.Description,
+		&agent.Category, &agent.Status, &agent.ConfigEncrypted, &agent.ConfigIV,
+		&agent.PricePerCall, &agent.TotalCalls, &agent.TotalRevenue,
+		&agent.AverageRating, &agent.ReviewCount, &agent.TokenID,
+		&agent.TokenTxHash, &agent.TrialEnabled, &agent.Version, &agent.CreatedAt, &agent.UpdatedAt,
+		&agent.PublishedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update trial status: %w", err)
+	}
+
+	// Decrypt config for response
+	cfg, err := s.decryptConfig(agent.ConfigEncrypted, agent.ConfigIV)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt config: %w", err)
+	}
+
+	return s.toAgentResponse(agent, cfg), nil
+}
+
 // toAgentResponse converts an Agent model to AgentResponse
 func (s *Service) toAgentResponse(agent *models.Agent, cfg *models.AgentConfig) *AgentResponse {
 	return &AgentResponse{
@@ -606,6 +651,7 @@ func (s *Service) toAgentResponse(agent *models.Agent, cfg *models.AgentConfig) 
 		ReviewCount:   agent.ReviewCount,
 		TokenID:       agent.TokenID,
 		TokenTxHash:   agent.TokenTxHash,
+		TrialEnabled:  agent.TrialEnabled,
 		Version:       agent.Version,
 		CreatedAt:     agent.CreatedAt,
 		UpdatedAt:     agent.UpdatedAt,

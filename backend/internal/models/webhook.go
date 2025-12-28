@@ -10,9 +10,10 @@ import (
 type WebhookEvent string
 
 const (
-	WebhookEventQuotaLow      WebhookEvent = "quota.low"
-	WebhookEventCallCompleted WebhookEvent = "call.completed"
-	WebhookEventPaymentDone   WebhookEvent = "payment.completed"
+	WebhookEventQuotaLow       WebhookEvent = "quota.low"
+	WebhookEventCallCompleted  WebhookEvent = "call.completed"
+	WebhookEventPaymentDone    WebhookEvent = "payment.completed"
+	WebhookEventPaymentFailed  WebhookEvent = "payment.failed"
 )
 
 // Webhook represents a webhook configuration
