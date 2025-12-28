@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/aimerfeng/AgentLink/internal/agent"
+	"github.com/aimerfeng/AgentLink/internal/apikey"
 	"github.com/aimerfeng/AgentLink/internal/auth"
 	"github.com/aimerfeng/AgentLink/internal/config"
 	apierrors "github.com/aimerfeng/AgentLink/internal/errors"
@@ -24,6 +25,7 @@ type APIServer struct {
 	db               *pgxpool.Pool
 	authService      *auth.Service
 	agentService     *agent.Service
+	apiKeyService    *apikey.Service
 	jwtAuthenticator *middleware.JWTAuthenticator
 }
 
@@ -52,6 +54,9 @@ func NewAPIServer(cfg *config.Config, db *pgxpool.Pool) *APIServer {
 		agentService = nil
 	}
 
+	// Create API key service
+	apiKeyService := apikey.NewService(db)
+
 	// Create JWT authenticator for middleware
 	jwtAuthenticator := middleware.NewJWTAuthenticator(&cfg.JWT)
 
@@ -61,6 +66,7 @@ func NewAPIServer(cfg *config.Config, db *pgxpool.Pool) *APIServer {
 		db:               db,
 		authService:      authService,
 		agentService:     agentService,
+		apiKeyService:    apiKeyService,
 		jwtAuthenticator: jwtAuthenticator,
 	}
 
@@ -724,9 +730,114 @@ func (s *APIServer) handleGetPublicAgent(c *gin.Context)  { c.JSON(501, gin.H{"e
 func (s *APIServer) handleGetCategories(c *gin.Context)   { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleGetFeatured(c *gin.Context)     { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleGetDeveloper(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleListAPIKeys(c *gin.Context)     { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleCreateAPIKey(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
-func (s *APIServer) handleDeleteAPIKey(c *gin.Context)    { c.JSON(501, gin.H{"error": "not implemented"}) }
+
+// handleListAPIKeys handles listing all API keys for a developer
+func (s *APIServer) handleListAPIKeys(c *gin.Context) {
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// List API keys
+	resp, err := s.apiKeyService.List(c.Request.Context(), userID)
+	if err != nil {
+		respondError(c, apierrors.ErrInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleCreateAPIKey handles creating a new API key
+func (s *APIServer) handleCreateAPIKey(c *gin.Context) {
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse request body
+	var req apikey.CreateAPIKeyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Allow empty body for default key creation
+		req = apikey.CreateAPIKeyRequest{}
+	}
+
+	// Create API key
+	resp, err := s.apiKeyService.Create(c.Request.Context(), userID, &req)
+	if err != nil {
+		switch err {
+		case apikey.ErrMaxKeysReached:
+			respondError(c, apierrors.NewInvalidRequestError("Maximum number of API keys reached (10)"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusCreated, resp)
+}
+
+// handleDeleteAPIKey handles revoking/deleting an API key
+func (s *APIServer) handleDeleteAPIKey(c *gin.Context) {
+	// Get user ID from context
+	userIDStr := middleware.GetUserIDFromContext(c)
+	if userIDStr == "" {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		respondError(c, apierrors.ErrInvalidCredentialsError)
+		return
+	}
+
+	// Parse key ID from URL
+	keyIDStr := c.Param("id")
+	keyID, err := uuid.Parse(keyIDStr)
+	if err != nil {
+		respondError(c, apierrors.NewValidationError("Invalid API key ID"))
+		return
+	}
+
+	// Delete (revoke) API key
+	err = s.apiKeyService.Delete(c.Request.Context(), keyID, userID)
+	if err != nil {
+		switch err {
+		case apikey.ErrAPIKeyNotFound:
+			respondError(c, &apierrors.APIError{
+				Code:       apierrors.ErrInvalidRequest,
+				Message:    "API key not found",
+				HTTPStatus: http.StatusNotFound,
+			})
+		case apikey.ErrAPIKeyNotOwned:
+			respondError(c, apierrors.ErrForbiddenError)
+		case apikey.ErrAPIKeyRevoked:
+			respondError(c, apierrors.NewInvalidRequestError("API key is already revoked"))
+		default:
+			respondError(c, apierrors.ErrInternalServerError)
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "API key revoked successfully"})
+}
 func (s *APIServer) handleGetUsage(c *gin.Context)        { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleCheckout(c *gin.Context)        { c.JSON(501, gin.H{"error": "not implemented"}) }
 func (s *APIServer) handleStripeWebhook(c *gin.Context)   { c.JSON(501, gin.H{"error": "not implemented"}) }

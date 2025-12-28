@@ -2,6 +2,153 @@
 
 ## [Unreleased]
 
+### 2024-12-28 - API Key 管理实现
+
+#### 新增功能
+
+**Task 11: 实现 API Key 管理** ✅
+
+##### 11.1 创建 API Key CRUD 接口
+- 实现 `POST /api/v1/developers/keys` - 创建 API Key
+  - 生成安全的 API Key（`ak_` 前缀 + 64 位十六进制随机字符）
+  - 使用 SHA-256 哈希存储（原始 Key 仅在创建时返回一次）
+  - 支持自定义名称和权限配置
+  - 每用户最多 10 个 API Key
+- 实现 `GET /api/v1/developers/keys` - 获取 API Key 列表
+  - 返回所有 Key（包括已撤销的）
+  - 显示 Key 前缀、名称、权限、最后使用时间、创建时间、撤销时间
+- 实现 `DELETE /api/v1/developers/keys/:id` - 撤销 API Key
+  - 软删除（设置 revoked_at 时间戳）
+  - 验证所有权（仅所有者可撤销）
+  - 已撤销的 Key 无法再次撤销
+- 实现 `ValidateAPIKey()` - 验证 API Key
+  - 验证 Key 格式（`ak_` 前缀）
+  - 验证 Key 存在性和有效性
+  - 检查是否已撤销
+  - 异步更新最后使用时间
+- **Validates: Requirements R4.2, R4.3, R4.4**
+
+##### 11.2 属性测试 - Property 12: API Key Revocation Immediacy
+- 验证撤销后的 Key 立即被拒绝（100 次测试）
+- 验证撤销一个 Key 不影响其他 Key
+- 验证并发访问时撤销立即生效
+- 验证 Key 生成格式正确（100 次测试）
+- 验证 Hash 计算一致性（100 次测试）
+- **Validates: Requirements 4.3**
+
+#### 新增文件
+
+```
+backend/internal/apikey/
+├── apikey.go              # API Key 服务核心逻辑
+└── apikey_property_test.go # Property 12 属性测试
+```
+
+#### 修改文件
+
+- `backend/internal/server/api.go` - 实现 API Key 相关 handler
+
+#### 新增类型
+
+```go
+// CreateAPIKeyRequest - 创建 API Key 请求
+type CreateAPIKeyRequest struct {
+    Name        string          `json:"name"`
+    Permissions map[string]bool `json:"permissions,omitempty"`
+}
+
+// CreateAPIKeyResponse - 创建 API Key 响应（包含原始 Key）
+type CreateAPIKeyResponse struct {
+    ID          uuid.UUID       `json:"id"`
+    Key         string          `json:"key"` // 仅在创建时返回
+    KeyPrefix   string          `json:"key_prefix"`
+    Name        *string         `json:"name,omitempty"`
+    Permissions map[string]bool `json:"permissions"`
+    CreatedAt   time.Time       `json:"created_at"`
+}
+
+// APIKeyResponse - API Key 响应（不含原始 Key）
+type APIKeyResponse struct {
+    ID          uuid.UUID       `json:"id"`
+    KeyPrefix   string          `json:"key_prefix"`
+    Name        *string         `json:"name,omitempty"`
+    Permissions map[string]bool `json:"permissions"`
+    LastUsedAt  *time.Time      `json:"last_used_at,omitempty"`
+    CreatedAt   time.Time       `json:"created_at"`
+    RevokedAt   *time.Time      `json:"revoked_at,omitempty"`
+}
+
+// ListAPIKeysResponse - API Key 列表响应
+type ListAPIKeysResponse struct {
+    Keys  []APIKeyResponse `json:"keys"`
+    Total int              `json:"total"`
+}
+```
+
+#### 新增错误类型
+
+| 错误 | 描述 |
+|------|------|
+| `ErrAPIKeyNotFound` | API Key 不存在 |
+| `ErrAPIKeyRevoked` | API Key 已被撤销 |
+| `ErrAPIKeyNotOwned` | API Key 不属于当前用户 |
+| `ErrInvalidAPIKey` | 无效的 API Key 格式 |
+| `ErrMaxKeysReached` | 已达到最大 API Key 数量限制 |
+
+#### API 接口
+
+```
+POST   /api/v1/developers/keys      # 创建 API Key
+GET    /api/v1/developers/keys      # 获取 API Key 列表
+DELETE /api/v1/developers/keys/:id  # 撤销 API Key
+```
+
+#### 需求覆盖
+
+| 需求 | 描述 | 状态 |
+|------|------|------|
+| R4.2 | 创建具有可配置权限的唯一 API Key | ✅ |
+| R4.3 | 撤销 API Key 立即使其失效 | ✅ |
+| R4.4 | 支持每个开发者账户多个 API Key | ✅ |
+
+#### 测试命令
+
+```bash
+# 运行所有 API Key 测试
+go test -v ./internal/apikey/... -count=1
+
+# 运行 Property 12 撤销立即性测试
+go test -v -run TestProperty12 ./internal/apikey/...
+
+# 运行 Key 生成和 Hash 测试
+go test -v -run "TestAPIKey" ./internal/apikey/...
+```
+
+#### 测试结果
+
+| 测试 | 状态 | 说明 |
+|------|------|------|
+| TestProperty12_APIKeyRevocationImmediacy | ✅ PASS | 需要数据库 |
+| TestProperty12_APIKeyRevocationImmediacy_MultipleKeys | ✅ PASS | 需要数据库 |
+| TestProperty12_APIKeyRevocationImmediacy_ConcurrentAccess | ✅ PASS | 需要数据库 |
+| TestAPIKeyGeneration | ✅ PASS | 100 次测试通过 |
+| TestAPIKeyHashConsistency | ✅ PASS | 100 次测试通过 |
+
+#### 安全设计
+
+1. **Key 生成**: 使用 `crypto/rand` 生成 32 字节随机数，转换为 64 位十六进制字符串
+2. **Key 存储**: 仅存储 SHA-256 哈希值，原始 Key 不可恢复
+3. **Key 前缀**: 保存前 11 位（`ak_` + 8 字符）用于显示识别
+4. **撤销机制**: 软删除，保留审计记录
+5. **验证流程**: 计算输入 Key 的哈希值与数据库比对
+
+#### 下一步计划
+
+- Task 12: 实现 Proxy Gateway 核心
+- Task 13: 实现限速和熔断
+
+---
+
 ### 2024-12-28 - Agent 发布管理实现
 
 #### 新增功能
