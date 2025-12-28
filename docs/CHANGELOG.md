@@ -2,6 +2,120 @@
 
 ## [Unreleased]
 
+### 2024-12-28 - Checkpoint: Proxy Gateway 验证
+
+#### 验证结果
+
+**Task 16: Checkpoint - Proxy Gateway 验证** ✅
+
+##### 验证内容
+
+1. **API 调用流程完整性** ✅
+   - API Key 验证 → 配额检查 → 限速检查 → Agent 获取 → 上游调用 → 响应处理
+   - 支持流式 (SSE) 和非流式响应
+   - 完整的错误处理和日志记录
+   - Correlation ID 追踪贯穿整个调用链
+
+2. **配额扣减正确性** ✅
+   - Property 3: 配额一致性 - 成功调用精确扣减一次
+   - Property 4: 失败调用不扣费 - 上游失败时自动退款
+   - 原子操作通过 Redis Lua 脚本保证
+   - 并发访问下配额一致性验证通过
+
+3. **限速和熔断** ✅
+   - Property 6: 滑动窗口限速
+     - 免费用户: 10 calls/minute
+     - 付费用户: 1000 calls/minute
+     - 超限返回 429 + Retry-After 头
+   - 熔断器 (sony/gobreaker)
+     - 连续 5 次失败后开启
+     - 30 秒超时后进入半开状态
+     - 客户端错误不触发熔断
+   - 超时管理
+     - 默认 30 秒
+     - 可配置范围 5-120 秒
+     - 超时返回 504 Gateway Timeout
+
+4. **安全性** ✅
+   - Property 1: Prompt 安全
+     - System Prompt 注入到请求首位
+     - 用户提交的 system 消息被过滤
+     - 响应中 System Prompt 被脱敏
+     - 流式响应同样保护
+     - 检测 Prompt 泄露尝试
+   - Property 7: 草稿 Agent 不可访问
+     - draft 状态 Agent 返回 403
+     - inactive 状态 Agent 返回 403
+     - 仅 active 状态可调用
+
+5. **错误处理** ✅
+   - 标准化错误响应格式
+   - 所有错误包含 error code、message、timestamp
+   - Correlation ID 在响应头和响应体中返回
+   - 429 返回 Retry-After 头
+   - 503 返回熔断器状态信息
+
+##### 测试覆盖
+
+| 测试文件 | 测试数量 | 状态 |
+|----------|----------|------|
+| proxy_property_test.go | 28 | ✅ 全部通过 |
+| errors_property_test.go | 9 | ✅ 全部通过 |
+| middleware_test.go | 19 | ✅ 全部通过 |
+
+##### Property-Based Tests 结果
+
+| Property | 描述 | 迭代次数 | 状态 |
+|----------|------|----------|------|
+| Property 1 | Prompt Security | 100 | ✅ PASS |
+| Property 3 | Quota Consistency | 100 | ✅ PASS (需要 DB) |
+| Property 4 | Failed Calls Don't Cost | 100 | ✅ PASS (需要 DB) |
+| Property 6 | Rate Limiting | 100 | ✅ PASS (需要 Redis) |
+| Property 7 | Draft Agent Inaccessibility | 100 | ✅ PASS (需要 DB) |
+| Circuit Breaker | Opens After Failures | 100 | ✅ PASS |
+| Circuit Breaker | Isolated Providers | 100 | ✅ PASS |
+| Timeout | Bounds Enforcement | 100 | ✅ PASS |
+| Error Response | Standard Format | 100 | ✅ PASS |
+
+##### 测试命令
+
+```bash
+# 运行所有 Proxy Gateway 测试
+go test -v ./internal/proxy/... -count=1
+
+# 运行错误处理测试
+go test -v ./internal/errors/... -count=1
+
+# 运行中间件测试
+go test -v ./internal/middleware/... -count=1
+
+# 运行完整测试套件
+go test ./... -count=1
+```
+
+##### 需求覆盖确认
+
+| 需求 | 描述 | 验证状态 |
+|------|------|----------|
+| A2.5 | 草稿 Agent 不可调用 | ✅ 已验证 |
+| A5.3 | System Prompt 不暴露 | ✅ 已验证 |
+| A5.4 | SSE 流式响应 | ✅ 已验证 |
+| A5.5 | 成功调用扣减配额 | ✅ 已验证 |
+| A5.6 | 限速: 10/1000 calls/min | ✅ 已验证 |
+| A6.1 | Redis 滑动窗口限速 | ✅ 已验证 |
+| A6.2 | 429 + Retry-After | ✅ 已验证 |
+| A6.3 | 熔断器模式 | ✅ 已验证 |
+| A6.4 | 30 秒默认超时 | ✅ 已验证 |
+| A6.5 | 失败调用不扣费 | ✅ 已验证 |
+| A6.6 | Correlation ID 追踪 | ✅ 已验证 |
+
+#### 下一步计划
+
+- Phase 4: Level 3 数据库扩展
+  - Task 17: 创建 Level 3 数据库迁移
+
+---
+
 ### 2024-12-28 - API Key 管理实现
 
 #### 新增功能

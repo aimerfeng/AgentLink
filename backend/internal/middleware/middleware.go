@@ -146,11 +146,21 @@ var (
 func respondWithError(c *gin.Context, err *apierrors.APIError) {
 	requestID, _ := c.Get("request_id")
 	reqIDStr, _ := requestID.(string)
+	correlationID, _ := c.Get("correlation_id")
+	corrIDStr, _ := correlationID.(string)
+	if corrIDStr == "" {
+		corrIDStr = reqIDStr
+	}
 
-	c.JSON(err.HTTPStatus, apierrors.ErrorResponse{
-		Error:     *err,
-		RequestID: reqIDStr,
-	})
+	response := apierrors.NewErrorResponse(
+		err,
+		reqIDStr,
+		corrIDStr,
+		c.Request.URL.Path,
+		c.Request.Method,
+	)
+
+	c.JSON(err.HTTPStatus, response)
 }
 
 // RequireRole creates a middleware that checks if the user has one of the required roles
@@ -261,6 +271,46 @@ func RequestID() gin.HandlerFunc {
 		c.Header("X-Request-ID", requestID)
 		c.Next()
 	}
+}
+
+// CorrelationID adds a correlation ID for distributed tracing
+// The correlation ID is used to trace requests across multiple services
+// It can be passed from upstream services or generated if not present
+func CorrelationID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Check for existing correlation ID from upstream
+		correlationID := c.GetHeader("X-Correlation-ID")
+		if correlationID == "" {
+			// Fall back to request ID if no correlation ID provided
+			correlationID = c.GetString("request_id")
+			if correlationID == "" {
+				correlationID = uuid.New().String()
+			}
+		}
+		c.Set("correlation_id", correlationID)
+		c.Header("X-Correlation-ID", correlationID)
+		c.Next()
+	}
+}
+
+// GetCorrelationIDFromContext extracts the correlation ID from the gin context
+// Returns empty string if not found
+func GetCorrelationIDFromContext(c *gin.Context) string {
+	correlationID, exists := c.Get("correlation_id")
+	if !exists {
+		return ""
+	}
+	return correlationID.(string)
+}
+
+// GetRequestIDFromContext extracts the request ID from the gin context
+// Returns empty string if not found
+func GetRequestIDFromContext(c *gin.Context) string {
+	requestID, exists := c.Get("request_id")
+	if !exists {
+		return ""
+	}
+	return requestID.(string)
 }
 
 // CORS configures CORS headers

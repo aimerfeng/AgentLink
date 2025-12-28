@@ -428,3 +428,198 @@ func TestContextHelpers(t *testing.T) {
 		t.Errorf("Expected status 200, got %d", w.Code)
 	}
 }
+
+
+// Property tests for Correlation ID middleware
+// **Validates: Requirements A6.6**
+
+func TestProperty_CorrelationID_GeneratedWhenMissing(t *testing.T) {
+	router := gin.New()
+	router.Use(RequestID())
+	router.Use(CorrelationID())
+	router.GET("/test", func(c *gin.Context) {
+		correlationID := GetCorrelationIDFromContext(c)
+		c.JSON(http.StatusOK, gin.H{"correlation_id": correlationID})
+	})
+
+	// Make request without correlation ID header
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Property: Correlation ID should be generated
+	correlationID := w.Header().Get("X-Correlation-ID")
+	if correlationID == "" {
+		t.Fatal("PROPERTY VIOLATION: Correlation ID should be generated when not provided")
+	}
+
+	// Property: Correlation ID should be a valid UUID format
+	if len(correlationID) != 36 {
+		t.Fatalf("PROPERTY VIOLATION: Correlation ID should be UUID format, got length %d", len(correlationID))
+	}
+}
+
+func TestProperty_CorrelationID_PropagatedFromHeader(t *testing.T) {
+	router := gin.New()
+	router.Use(RequestID())
+	router.Use(CorrelationID())
+	router.GET("/test", func(c *gin.Context) {
+		correlationID := GetCorrelationIDFromContext(c)
+		c.JSON(http.StatusOK, gin.H{"correlation_id": correlationID})
+	})
+
+	// Make request with correlation ID header
+	expectedCorrelationID := "test-correlation-id-12345"
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-Correlation-ID", expectedCorrelationID)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Property: Correlation ID should be propagated from header
+	correlationID := w.Header().Get("X-Correlation-ID")
+	if correlationID != expectedCorrelationID {
+		t.Fatalf("PROPERTY VIOLATION: Correlation ID should be propagated, expected %s, got %s",
+			expectedCorrelationID, correlationID)
+	}
+}
+
+func TestProperty_CorrelationID_FallsBackToRequestID(t *testing.T) {
+	router := gin.New()
+	router.Use(RequestID())
+	router.Use(CorrelationID())
+
+	var capturedRequestID string
+	var capturedCorrelationID string
+
+	router.GET("/test", func(c *gin.Context) {
+		capturedRequestID = GetRequestIDFromContext(c)
+		capturedCorrelationID = GetCorrelationIDFromContext(c)
+		c.JSON(http.StatusOK, gin.H{})
+	})
+
+	// Make request without correlation ID but with request ID
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Property: When no correlation ID is provided, it should fall back to request ID
+	if capturedCorrelationID != capturedRequestID {
+		t.Fatalf("PROPERTY VIOLATION: Correlation ID should fall back to request ID, got correlation=%s, request=%s",
+			capturedCorrelationID, capturedRequestID)
+	}
+}
+
+func TestProperty_CorrelationID_SetInResponseHeader(t *testing.T) {
+	router := gin.New()
+	router.Use(RequestID())
+	router.Use(CorrelationID())
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{})
+	})
+
+	// Test with provided correlation ID
+	providedID := "provided-correlation-id"
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-Correlation-ID", providedID)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Property: Response should include X-Correlation-ID header
+	responseCorrelationID := w.Header().Get("X-Correlation-ID")
+	if responseCorrelationID == "" {
+		t.Fatal("PROPERTY VIOLATION: Response should include X-Correlation-ID header")
+	}
+	if responseCorrelationID != providedID {
+		t.Fatalf("PROPERTY VIOLATION: Response correlation ID should match provided, expected %s, got %s",
+			providedID, responseCorrelationID)
+	}
+}
+
+func TestProperty_CorrelationID_UniquePerRequest(t *testing.T) {
+	router := gin.New()
+	router.Use(RequestID())
+	router.Use(CorrelationID())
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{})
+	})
+
+	// Make multiple requests without correlation ID
+	correlationIDs := make(map[string]bool)
+	numRequests := 10
+
+	for i := 0; i < numRequests; i++ {
+		req := httptest.NewRequest("GET", "/test", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		correlationID := w.Header().Get("X-Correlation-ID")
+		if correlationID == "" {
+			t.Fatal("PROPERTY VIOLATION: Correlation ID should be generated")
+		}
+
+		if correlationIDs[correlationID] {
+			t.Fatalf("PROPERTY VIOLATION: Correlation ID should be unique, got duplicate: %s", correlationID)
+		}
+		correlationIDs[correlationID] = true
+	}
+
+	// Property: All correlation IDs should be unique
+	if len(correlationIDs) != numRequests {
+		t.Fatalf("PROPERTY VIOLATION: Expected %d unique correlation IDs, got %d",
+			numRequests, len(correlationIDs))
+	}
+}
+
+func TestProperty_RequestID_GeneratedWhenMissing(t *testing.T) {
+	router := gin.New()
+	router.Use(RequestID())
+	router.GET("/test", func(c *gin.Context) {
+		requestID := GetRequestIDFromContext(c)
+		c.JSON(http.StatusOK, gin.H{"request_id": requestID})
+	})
+
+	// Make request without request ID header
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Property: Request ID should be generated
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Fatal("PROPERTY VIOLATION: Request ID should be generated when not provided")
+	}
+
+	// Property: Request ID should be a valid UUID format
+	if len(requestID) != 36 {
+		t.Fatalf("PROPERTY VIOLATION: Request ID should be UUID format, got length %d", len(requestID))
+	}
+}
+
+func TestProperty_RequestID_PropagatedFromHeader(t *testing.T) {
+	router := gin.New()
+	router.Use(RequestID())
+	router.GET("/test", func(c *gin.Context) {
+		requestID := GetRequestIDFromContext(c)
+		c.JSON(http.StatusOK, gin.H{"request_id": requestID})
+	})
+
+	// Make request with request ID header
+	expectedRequestID := "test-request-id-12345"
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("X-Request-ID", expectedRequestID)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Property: Request ID should be propagated from header
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID != expectedRequestID {
+		t.Fatalf("PROPERTY VIOLATION: Request ID should be propagated, expected %s, got %s",
+			expectedRequestID, requestID)
+	}
+}

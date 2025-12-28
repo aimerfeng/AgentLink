@@ -275,11 +275,21 @@ func (s *APIServer) handleRefresh(c *gin.Context) {
 func respondError(c *gin.Context, err *apierrors.APIError) {
 	requestID, _ := c.Get("request_id")
 	reqIDStr, _ := requestID.(string)
+	correlationID, _ := c.Get("correlation_id")
+	corrIDStr, _ := correlationID.(string)
+	if corrIDStr == "" {
+		corrIDStr = reqIDStr
+	}
 
-	c.JSON(err.HTTPStatus, apierrors.ErrorResponse{
-		Error:     *err,
-		RequestID: reqIDStr,
-	})
+	response := apierrors.NewErrorResponse(
+		err,
+		reqIDStr,
+		corrIDStr,
+		c.Request.URL.Path,
+		c.Request.Method,
+	)
+
+	c.JSON(err.HTTPStatus, response)
 }
 
 // Placeholder handlers - to be implemented in subsequent tasks
